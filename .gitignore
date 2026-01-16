@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Arduino
+firmware/**/build/
+*.elf
+*.bin
+
+# IDE
+.vscode/
+*.swp
+.DS_Store
