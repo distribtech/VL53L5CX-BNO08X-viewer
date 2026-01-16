@@ -55,3 +55,17 @@ Open http://localhost:8080 in your browser.
 - **FoV:** 65° diagonal
 - **Range:** 20mm - 4000mm
 - **Update rate:** 15 Hz
+- **Distance type:** Perpendicular (z-axis), not radial. The chip converts ToF measurements internally so a flat surface perpendicular to the sensor reports the same distance across all zones.
+
+## Serial Protocol
+
+The ESP32 streams JSON over serial at 115200 baud:
+
+```json
+{"distances":[d0,d1,...,d63],"status":[s0,s1,...,s63]}
+```
+
+- `distances`: 64 values in mm (perpendicular distance)
+- `status`: 64 values where `5` = valid measurement
+
+Zones are row-major: 0-7 = row 0, 8-15 = row 1, etc.
