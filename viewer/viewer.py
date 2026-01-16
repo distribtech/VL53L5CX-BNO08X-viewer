@@ -8,11 +8,14 @@ as a real-time 3D point cloud using Viser.
 
 import argparse
 import json
+from pathlib import Path
 import threading
 import time
 
 import numpy as np
+from PIL import Image
 import serial
+import trimesh
 import viser
 
 
@@ -40,6 +43,11 @@ class VL53L5CXViewer:
         self.distances = np.zeros(self.NUM_ZONES, dtype=np.float32)
         self.status = np.zeros(self.NUM_ZONES, dtype=np.uint8)
         self.data_lock = threading.Lock()
+
+        # Data FPS tracking
+        self.frame_count = 0
+        self.last_fps_time = time.time()
+        self.data_fps = 0.0
 
     def _compute_zone_angles(self):
         """Pre-compute the angle for each zone center."""
@@ -131,7 +139,7 @@ class VL53L5CXViewer:
         print("Serial reader thread started")
         while self.running:
             try:
-                if self.serial:
+                if self.serial and self.serial.is_open:
                     line = self.serial.readline()
                     if line:
                         line_str = line.decode("utf-8", errors="ignore").strip()
@@ -140,16 +148,22 @@ class VL53L5CXViewer:
                                 data = json.loads(line_str)
                                 if "distances" in data and "status" in data:
                                     with self.data_lock:
-                                        self.distances = np.array(
-                                            data["distances"], dtype=np.float32
-                                        )
-                                        self.status = np.array(
-                                            data["status"], dtype=np.uint8
-                                        )
+                                        self.distances = np.array(data["distances"], dtype=np.float32)
+                                        self.status = np.array(data["status"], dtype=np.uint8)
+                                    # Track data FPS
+                                    self.frame_count += 1
+                                    now = time.time()
+                                    elapsed = now - self.last_fps_time
+                                    if elapsed >= 1.0:
+                                        self.data_fps = self.frame_count / elapsed
+                                        self.frame_count = 0
+                                        self.last_fps_time = now
                             except json.JSONDecodeError:
                                 pass
-            except serial.SerialException as e:
-                print(f"Serial error: {e}")
+            except (serial.SerialException, OSError):
+                # Expected during shutdown
+                if self.running:
+                    print("Serial connection lost")
                 break
 
     def run(self, host: str = "0.0.0.0", port: int = 8080):
@@ -170,8 +184,18 @@ class VL53L5CXViewer:
         server = viser.ViserServer(host=host, port=port)
         print(f"Viser server started at http://localhost:{port}")
 
-        # Add coordinate frame at origin
-        server.scene.add_frame("/origin", axes_length=0.1, axes_radius=0.005)
+        # Set initial camera pose for new clients
+        @server.on_client_connect
+        def on_client_connect(client: viser.ClientHandle) -> None:
+            # client.camera.position = (0.0, -0.50, 0.50)
+            client.camera.position = (0.0, -0.50, 0.0)
+            client.camera.look_at = (0.0, 0.0, 0.0)
+            client.camera.up = (0.0, 0.0, 1.0)
+            client.camera.near = 0.001  # 1mm near clipping for close-up viewing
+            client.camera.fov = 0.35  # ~20° FOV for less perspective distortion
+
+        # Add small coordinate frame above the texture plane (z=0.0001)
+        server.scene.add_frame("/origin", axes_length=0.002, axes_radius=0.0001)
 
         # Add a grid on the XY plane for reference
         grid_size = 2.0  # meters
@@ -186,17 +210,78 @@ class VL53L5CXViewer:
             server.scene.add_spline_catmull_rom(
                 f"/grid/line_{idx}",
                 positions=np.array([start, end]),
-                color=(80, 80, 80),
+                color=(160, 160, 160),
                 line_width=1.0,
             )
+
+        # Add Pololu VL53L5CX board representation
+        # Board dimensions: 13mm x 18mm x 1mm (width x length x height)
+        # Measured from Pololu VL53L5CX carrier board with calipers
+        board_width = 0.013  # 13mm in metres
+        board_length = 0.018  # 18mm in metres
+        board_height = 0.001  # 1mm in metres
+
+        # Create box with top face at z=0
+        board_mesh = trimesh.creation.box(extents=[board_width, board_length, board_height])
+        board_mesh.vertices[:, 2] -= board_height / 2
+
+        # Load texture and apply to box
+        assets_dir = Path(__file__).parent.parent / "assets"
+        texture_path = assets_dir / "vl53l5cx-top.jpg"
+        if texture_path.exists():
+            texture_image = Image.open(texture_path)
+            # UV coordinates based on vertex x,y positions (maps top face correctly)
+            uv = np.zeros((len(board_mesh.vertices), 2))
+            for i, v in enumerate(board_mesh.vertices):
+                uv[i, 0] = (v[0] + board_width / 2) / board_width
+                uv[i, 1] = (v[1] + board_length / 2) / board_length
+            material = trimesh.visual.material.PBRMaterial(
+                baseColorTexture=texture_image,
+                metallicFactor=0.0,
+                roughnessFactor=1.0,
+            )
+            board_mesh.visual = trimesh.visual.TextureVisuals(uv=uv, material=material)
+        else:
+            board_mesh.visual.face_colors = [0, 100, 0, 255]  # Green fallback
+
+        server.scene.add_mesh_trimesh("/sensor/board", mesh=board_mesh)
 
         # Add info panel
         with server.gui.add_folder("Sensor Info"):
             distance_text = server.gui.add_text("Status", initial_value="Waiting...")
-            fps_text = server.gui.add_text("FPS", initial_value="0")
+            freq_text = server.gui.add_text("Frequency (Hz)", initial_value="0")
+
+        # Add settings panel
+        with server.gui.add_folder("Settings"):
+            point_size_slider = server.gui.add_slider(
+                "Point Size",
+                min=0.001,
+                max=0.020,
+                step=0.001,
+                initial_value=0.001,
+            )
+            show_rays_checkbox = server.gui.add_checkbox(
+                "Show Zone Rays",
+                initial_value=True,
+            )
+
+        # Create zone ray visualization (64 rays showing discrete sampling directions)
+        max_dist = self.MAX_RANGE_MM / 1000  # 4000mm in metres
+        zone_rays = []
+        for i in range(self.NUM_ZONES):
+            # Calculate ray endpoint at max distance
+            x = max_dist * np.tan(self.zone_angles_x[i])
+            y = max_dist * np.tan(self.zone_angles_y[i])
+            z = max_dist
+            ray = server.scene.add_spline_catmull_rom(
+                f"/sensor/rays/ray_{i}",
+                positions=np.array([[0, 0, 0], [x, y, z]], dtype=np.float32),
+                color=(100, 150, 255),
+                line_width=1.0,
+            )
+            zone_rays.append(ray)
 
         # Main visualization loop
-        frame_times = []
         try:
             while True:
                 frame_start = time.time()
@@ -218,25 +303,22 @@ class VL53L5CXViewer:
                             "/sensor/points",
                             points=points[valid_mask].astype(np.float32),
                             colors=colors[valid_mask],
-                            point_size=0.03,
+                            point_size=point_size_slider.value,
                             point_shape="circle",
                         )
 
                         # Update info
                         valid_distances = distances[valid_mask]
-                        distance_text.value = (
-                            f"Range: {valid_distances.min():.0f}-"
-                            f"{valid_distances.max():.0f}mm"
-                        )
+                        distance_text.value = f"Range: {valid_distances.min():.0f}-" f"{valid_distances.max():.0f}mm"
                     else:
                         distance_text.value = "No valid data"
 
-                # Calculate FPS
-                frame_times.append(time.time() - frame_start)
-                if len(frame_times) > 30:
-                    frame_times.pop(0)
-                avg_frame_time = sum(frame_times) / len(frame_times)
-                fps_text.value = f"{1.0 / avg_frame_time:.1f}" if avg_frame_time > 0 else "0"
+                # Update frequency display (actual sensor data rate)
+                freq_text.value = f"{self.data_fps:.1f}"
+
+                # Update zone rays visibility
+                for ray in zone_rays:
+                    ray.visible = show_rays_checkbox.value
 
                 # Target ~30 FPS for smooth visualization
                 elapsed = time.time() - frame_start
@@ -259,15 +341,9 @@ def main():
         default="/dev/cu.usbserial-0001",
         help="Serial port (default: /dev/cu.usbserial-0001)",
     )
-    parser.add_argument(
-        "--baud", "-b", type=int, default=115200, help="Baud rate (default: 115200)"
-    )
-    parser.add_argument(
-        "--host", default="0.0.0.0", help="Viser server host (default: 0.0.0.0)"
-    )
-    parser.add_argument(
-        "--viser-port", type=int, default=8080, help="Viser server port (default: 8080)"
-    )
+    parser.add_argument("--baud", "-b", type=int, default=115200, help="Baud rate (default: 115200)")
+    parser.add_argument("--host", default="0.0.0.0", help="Viser server host (default: 0.0.0.0)")
+    parser.add_argument("--viser-port", type=int, default=8080, help="Viser server port (default: 8080)")
     args = parser.parse_args()
 
     viewer = VL53L5CXViewer(port=args.port, baud=args.baud)
