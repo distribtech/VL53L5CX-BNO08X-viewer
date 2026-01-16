@@ -13,6 +13,7 @@ import threading
 import time
 
 import numpy as np
+from scipy.spatial.transform import Rotation
 from PIL import Image
 import serial
 import trimesh
@@ -179,6 +180,112 @@ class VL53L5CXViewer:
 
         return self.filtered_distances.copy()
 
+    def _rotation_matrix_from_vectors(
+        self,
+        vec_from: np.ndarray,
+        vec_to: np.ndarray,
+    ) -> np.ndarray:
+        """Compute rotation matrix that rotates vec_from to vec_to.
+
+        Uses Rodrigues' rotation formula.
+        """
+        # Normalize inputs
+        a = vec_from / np.linalg.norm(vec_from)
+        b = vec_to / np.linalg.norm(vec_to)
+
+        # Handle parallel vectors
+        dot = np.dot(a, b)
+        if dot > 0.9999:
+            return np.eye(3)
+        if dot < -0.9999:
+            # 180 degree rotation - find perpendicular axis
+            perp = np.array([1, 0, 0]) if abs(a[0]) < 0.9 else np.array([0, 1, 0])
+            axis = np.cross(a, perp)
+            axis = axis / np.linalg.norm(axis)
+            return 2 * np.outer(axis, axis) - np.eye(3)
+
+        # Rodrigues' formula
+        v = np.cross(a, b)
+        s = np.linalg.norm(v)  # sin(angle)
+        c = dot  # cos(angle)
+
+        # Skew-symmetric cross-product matrix
+        vx = np.array([
+            [0, -v[2], v[1]],
+            [v[2], 0, -v[0]],
+            [-v[1], v[0], 0],
+        ])
+
+        # Rotation matrix: R = I + vx + vx^2 * (1-c)/s^2
+        return np.eye(3) + vx + vx @ vx * ((1 - c) / (s * s))
+
+    def _fit_plane(
+        self,
+        points: np.ndarray,
+        padding: float = 1.2,
+    ) -> tuple[np.ndarray, np.ndarray, float] | None:
+        """Fit a plane to 3D points and return position, orientation, and size.
+
+        Fits plane using least squares: z = ax + by + c
+
+        Args:
+            points: Nx3 array of valid 3D points
+            padding: Multiplier for plane size (1.0 = exact fit)
+
+        Returns:
+            Tuple of (position, wxyz_quaternion, size) or None if fitting fails
+        """
+        if len(points) < 3:
+            return None
+
+        # Extract coordinates
+        x = points[:, 0]
+        y = points[:, 1]
+        z = points[:, 2]
+
+        # Build design matrix for least squares: [x, y, 1] @ [a, b, c].T = z
+        A = np.column_stack([x, y, np.ones_like(x)])
+
+        try:
+            # Solve least squares: find a, b, c that minimize ||Ax - z||^2
+            coeffs, _, _, _ = np.linalg.lstsq(A, z, rcond=None)
+            a, b, c = coeffs
+        except np.linalg.LinAlgError:
+            return None
+
+        # Plane equation: z = ax + by + c
+        # Normal vector: n = (-a, -b, 1) (unnormalized)
+        normal = np.array([-a, -b, 1.0])
+        normal = normal / np.linalg.norm(normal)
+
+        # Compute centroid of points
+        centroid = points.mean(axis=0)
+
+        # Compute plane size based on XY span of points
+        x_span = x.max() - x.min()
+        y_span = y.max() - y.min()
+        plane_size = max(x_span, y_span) * padding
+
+        # Ensure minimum size for visibility
+        plane_size = max(plane_size, 0.05)  # At least 5cm
+
+        # Position: centroid adjusted to lie on fitted plane
+        plane_z = a * centroid[0] + b * centroid[1] + c
+        position = np.array([centroid[0], centroid[1], plane_z])
+
+        # Build rotation matrix to align Z-axis with plane normal
+        rotation = self._rotation_matrix_from_vectors(
+            np.array([0, 0, 1]),
+            normal,
+        )
+
+        # Convert rotation matrix to quaternion (wxyz format)
+        r = Rotation.from_matrix(rotation)
+        quat_xyzw = r.as_quat()  # scipy returns xyzw
+        wxyz = np.array([quat_xyzw[3], quat_xyzw[0], quat_xyzw[1], quat_xyzw[2]])
+
+        return position, wxyz, plane_size
+
     def serial_reader(self):
         """Background thread to read serial data."""
         print("Serial reader thread started")
@@ -330,6 +437,13 @@ class VL53L5CXViewer:
                 if not filter_checkbox.value:
                     self.filter_initialized = False
 
+            # Plane fitting controls
+            server.gui.add_markdown("---")
+            fit_plane_checkbox = server.gui.add_checkbox(
+                "Fit Plane",
+                initial_value=False,
+            )
+
         # Create zone ray visualization (64 rays showing discrete sampling directions)
         # Sensor reports z-distance (perpendicular), so rays end at flat planes
         min_z = self.MIN_RANGE_MM / 1000  # 20mm in metres
@@ -387,11 +501,32 @@ class VL53L5CXViewer:
                             point_shape="circle",
                         )
 
+                        # Plane fitting visualization
+                        if fit_plane_checkbox.value and np.sum(valid_mask) >= 3:
+                            plane_fit = self._fit_plane(points[valid_mask])
+                            if plane_fit is not None:
+                                pos, wxyz, size = plane_fit
+                                server.scene.add_box(
+                                    "/sensor/fitted_plane",
+                                    dimensions=(size, size, 0.0001),
+                                    position=pos,
+                                    wxyz=wxyz,
+                                    color=(255, 255, 0),  # Yellow
+                                    opacity=0.5,
+                                )
+
                         # Update info
                         valid_distances = distances[valid_mask]
                         distance_text.value = f"Range: {valid_distances.min():.0f}-" f"{valid_distances.max():.0f}mm"
                     else:
                         distance_text.value = "No valid data"
+
+                # Remove plane if checkbox is disabled or no valid points
+                if not fit_plane_checkbox.value:
+                    try:
+                        server.scene.remove("/sensor/fitted_plane")
+                    except Exception:
+                        pass
 
                 # Update frequency display (actual sensor data rate)
                 freq_text.value = f"{self.data_fps:.1f}"
