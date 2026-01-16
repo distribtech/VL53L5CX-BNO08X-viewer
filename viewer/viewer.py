@@ -77,27 +77,37 @@ class VL53L5CXViewer:
             self.zone_angles_x[i] = col_offset * angle_step
             self.zone_angles_y[i] = row_offset * angle_step
 
+        # Precompute tan of zone angles for XY calculation
+        # The sensor reports perpendicular (z-axis) distance, not radial
+        self.tan_x = np.tan(self.zone_angles_x)
+        self.tan_y = np.tan(self.zone_angles_y)
+
+        # Also precompute normalized ray directions for visualization
+        norm = np.sqrt(self.tan_x**2 + self.tan_y**2 + 1)
+        self.ray_dir_x = self.tan_x / norm
+        self.ray_dir_y = self.tan_y / norm
+        self.ray_dir_z = 1.0 / norm
+
     def distances_to_points(self, distances: np.ndarray) -> np.ndarray:
         """Convert distance measurements to 3D point coordinates.
 
         The sensor is assumed to be pointing UP (+Z direction),
-        lying flat on a horizontal surface.
+        lying flat on a horizontal surface. The VL53L5CX reports
+        perpendicular (z-axis) distance, not radial distance - the
+        chip performs this conversion internally.
 
         Args:
-            distances: Array of 64 distance values in mm
+            distances: Array of 64 distance values in mm (perpendicular)
 
         Returns:
             Nx3 array of (x, y, z) coordinates in meters
         """
-        # Convert to meters
-        d_meters = distances / 1000.0
+        # Convert to meters - this IS the z-coordinate
+        z = distances / 1000.0
 
-        # Calculate 3D positions
-        # Z is the distance (height above sensor)
-        # X and Y are lateral offsets based on angle
-        x = d_meters * np.tan(self.zone_angles_x)
-        y = d_meters * np.tan(self.zone_angles_y)
-        z = d_meters
+        # Calculate XY positions: lateral offset at this z-distance
+        x = z * self.tan_x
+        y = z * self.tan_y
 
         return np.column_stack([x, y, z])
 
@@ -187,8 +197,7 @@ class VL53L5CXViewer:
         # Set initial camera pose for new clients
         @server.on_client_connect
         def on_client_connect(client: viser.ClientHandle) -> None:
-            # client.camera.position = (0.0, -0.50, 0.50)
-            client.camera.position = (0.0, -0.50, 0.0)
+            client.camera.position = (0.0, -0.50, 0.50)
             client.camera.look_at = (0.0, 0.0, 0.0)
             client.camera.up = (0.0, 0.0, 1.0)
             client.camera.near = 0.001  # 1mm near clipping for close-up viewing
@@ -266,16 +275,25 @@ class VL53L5CXViewer:
             )
 
         # Create zone ray visualization (64 rays showing discrete sampling directions)
-        max_dist = self.MAX_RANGE_MM / 1000  # 4000mm in metres
+        # Sensor reports z-distance (perpendicular), so rays end at flat planes
+        min_z = self.MIN_RANGE_MM / 1000  # 20mm in metres
+        max_z = self.MAX_RANGE_MM / 1000  # 4000mm in metres
         zone_rays = []
         for i in range(self.NUM_ZONES):
-            # Calculate ray endpoint at max distance
-            x = max_dist * np.tan(self.zone_angles_x[i])
-            y = max_dist * np.tan(self.zone_angles_y[i])
-            z = max_dist
+            # Rays from min to max z-distance (flat planes, not curved surfaces)
+            start = [
+                min_z * self.tan_x[i],
+                min_z * self.tan_y[i],
+                min_z,
+            ]
+            end = [
+                max_z * self.tan_x[i],
+                max_z * self.tan_y[i],
+                max_z,
+            ]
             ray = server.scene.add_spline_catmull_rom(
                 f"/sensor/rays/ray_{i}",
-                positions=np.array([[0, 0, 0], [x, y, z]], dtype=np.float32),
+                positions=np.array([start, end], dtype=np.float32),
                 color=(100, 150, 255),
                 line_width=1.0,
             )
