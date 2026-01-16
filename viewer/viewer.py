@@ -49,6 +49,10 @@ class VL53L5CXViewer:
         self.last_fps_time = time.time()
         self.data_fps = 0.0
 
+        # Temporal filtering state
+        self.filtered_distances = np.zeros(self.NUM_ZONES, dtype=np.float32)
+        self.filter_initialized = False
+
     def _compute_zone_angles(self):
         """Pre-compute the angle for each zone center."""
         # Convert diagonal FoV to per-axis FoV (assuming square sensor)
@@ -143,6 +147,37 @@ class VL53L5CXViewer:
                 colors[i] = [128, 128, 128]
 
         return colors
+
+    def _apply_temporal_filter(
+        self,
+        distances: np.ndarray,
+        filter_strength: float,
+    ) -> np.ndarray:
+        """Apply exponential moving average filtering to distance data.
+
+        Args:
+            distances: Raw distance measurements (64 values in mm)
+            filter_strength: 0.0 = no smoothing, 1.0 = maximum smoothing
+
+        Returns:
+            Filtered distance array
+        """
+        # Alpha controls how much of the new value to use
+        # Higher filter_strength = more smoothing = lower alpha
+        alpha = 1.0 - filter_strength
+
+        if not self.filter_initialized:
+            # Initialize filter buffer with first valid frame
+            self.filtered_distances = distances.copy()
+            self.filter_initialized = True
+            return distances
+
+        # EMA formula: filtered = alpha * new + (1 - alpha) * old
+        self.filtered_distances = (
+            alpha * distances + (1.0 - alpha) * self.filtered_distances
+        )
+
+        return self.filtered_distances.copy()
 
     def serial_reader(self):
         """Background thread to read serial data."""
@@ -274,6 +309,27 @@ class VL53L5CXViewer:
                 initial_value=True,
             )
 
+            # Filtering controls
+            server.gui.add_markdown("---")
+            filter_checkbox = server.gui.add_checkbox(
+                "Enable Filtering",
+                initial_value=False,
+            )
+            filter_strength_slider = server.gui.add_slider(
+                "Filter Strength",
+                min=0.0,
+                max=1.0,
+                step=0.05,
+                initial_value=0.5,
+                disabled=True,
+            )
+
+            @filter_checkbox.on_update
+            def _on_filter_toggle(event: viser.GuiEvent) -> None:
+                filter_strength_slider.disabled = not filter_checkbox.value
+                if not filter_checkbox.value:
+                    self.filter_initialized = False
+
         # Create zone ray visualization (64 rays showing discrete sampling directions)
         # Sensor reports z-distance (perpendicular), so rays end at flat planes
         min_z = self.MIN_RANGE_MM / 1000  # 20mm in metres
@@ -307,6 +363,12 @@ class VL53L5CXViewer:
                 with self.data_lock:
                     distances = self.distances.copy()
                     status = self.status.copy()
+
+                # Apply temporal filtering if enabled
+                if filter_checkbox.value:
+                    distances = self._apply_temporal_filter(
+                        distances, filter_strength_slider.value
+                    )
 
                 if np.any(distances > 0):
                     # Convert to 3D points
