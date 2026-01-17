@@ -39,7 +39,7 @@ pip install -r viewer/requirements.txt
 ## Usage
 
 ```bash
-python viewer/viewer.py --port /dev/cu.usbserial-0001
+python -m viewer --port /dev/cu.usbserial-0001
 ```
 
 Open http://localhost:8080 in your browser.

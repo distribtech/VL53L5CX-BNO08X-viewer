@@ -1,336 +1,33 @@
 #!/usr/bin/env python3
-"""
-VL53L5CX Point Cloud Viewer
-
-Reads distance data from ESP32 over serial and visualizes
-as a real-time 3D point cloud using Viser.
-"""
+"""VL53L5CX Point Cloud Viewer - Main application."""
 
 import argparse
-import json
 from pathlib import Path
-import threading
 import time
 
 import numpy as np
-from scipy.spatial.transform import Rotation
-from PIL import Image
-import serial
-import trimesh
 import viser
+
+from . import config
+from .filters import TemporalFilter, fit_plane
+from .geometry import compute_zone_angles, distances_to_points, get_colors
+from .scene import create_board_mesh, create_grid, create_zone_rays
+from .serial_reader import SerialReader
 
 
 class VL53L5CXViewer:
     """Real-time point cloud viewer for VL53L5CX ToF sensor."""
 
-    # Sensor specs
-    RESOLUTION = 8  # 8x8 zones
-    NUM_ZONES = 64
-    FOV_DIAGONAL_DEG = 65.0  # Diagonal field of view
-    MAX_RANGE_MM = 4000
-    MIN_RANGE_MM = 20
-
     def __init__(self, port: str, baud: int = 115200):
-        self.port = port
-        self.baud = baud
-        self.serial: serial.Serial | None = None
-        self.running = False
-
-        # Pre-compute zone angles (accounting for lens flip)
-        # The sensor lens flips the image, so zone 0 corresponds to top-right
-        self._compute_zone_angles()
-
-        # Latest data
-        self.distances = np.zeros(self.NUM_ZONES, dtype=np.float32)
-        self.status = np.zeros(self.NUM_ZONES, dtype=np.uint8)
-        self.data_lock = threading.Lock()
-
-        # Data FPS tracking
-        self.frame_count = 0
-        self.last_fps_time = time.time()
-        self.data_fps = 0.0
-
-        # Temporal filtering state
-        self.filtered_distances = np.zeros(self.NUM_ZONES, dtype=np.float32)
-        self.filter_initialized = False
-
-    def _compute_zone_angles(self):
-        """Pre-compute the angle for each zone center."""
-        # Convert diagonal FoV to per-axis FoV (assuming square sensor)
-        # For a square, diagonal = side * sqrt(2), so side = diagonal / sqrt(2)
-        fov_per_axis_deg = self.FOV_DIAGONAL_DEG / np.sqrt(2)
-        fov_per_axis_rad = np.deg2rad(fov_per_axis_deg)
-
-        # Angle step per zone
-        angle_step = fov_per_axis_rad / self.RESOLUTION
-
-        # Zone center offsets from optical axis
-        # Zones are numbered row-major: 0-7 = row 0, 8-15 = row 1, etc.
-        # Due to lens flip, we invert the mapping
-        self.zone_angles_x = np.zeros(self.NUM_ZONES)
-        self.zone_angles_y = np.zeros(self.NUM_ZONES)
-
-        for i in range(self.NUM_ZONES):
-            row = i // self.RESOLUTION
-            col = i % self.RESOLUTION
-
-            # Center of zone relative to center of grid (0-7 -> -3.5 to 3.5)
-            # Flip due to lens inversion
-            col_offset = (self.RESOLUTION - 1) / 2 - col  # Flip X
-            row_offset = (self.RESOLUTION - 1) / 2 - row  # Flip Y
-
-            self.zone_angles_x[i] = col_offset * angle_step
-            self.zone_angles_y[i] = row_offset * angle_step
-
-        # Precompute tan of zone angles for XY calculation
-        # The sensor reports perpendicular (z-axis) distance, not radial
-        self.tan_x = np.tan(self.zone_angles_x)
-        self.tan_y = np.tan(self.zone_angles_y)
-
-        # Also precompute normalized ray directions for visualization
-        norm = np.sqrt(self.tan_x**2 + self.tan_y**2 + 1)
-        self.ray_dir_x = self.tan_x / norm
-        self.ray_dir_y = self.tan_y / norm
-        self.ray_dir_z = 1.0 / norm
-
-    def distances_to_points(self, distances: np.ndarray) -> np.ndarray:
-        """Convert distance measurements to 3D point coordinates.
-
-        The sensor is assumed to be pointing UP (+Z direction),
-        lying flat on a horizontal surface. The VL53L5CX reports
-        perpendicular (z-axis) distance, not radial distance - the
-        chip performs this conversion internally.
-
-        Args:
-            distances: Array of 64 distance values in mm (perpendicular)
-
-        Returns:
-            Nx3 array of (x, y, z) coordinates in meters
-        """
-        # Convert to meters - this IS the z-coordinate
-        z = distances / 1000.0
-
-        # Calculate XY positions: lateral offset at this z-distance
-        x = z * self.tan_x
-        y = z * self.tan_y
-
-        return np.column_stack([x, y, z])
-
-    def get_colors(self, distances: np.ndarray, status: np.ndarray) -> np.ndarray:
-        """Generate colors based on distance and validity.
-
-        Valid points: Blue (close) to Red (far)
-        Invalid points: Gray
-        """
-        colors = np.zeros((len(distances), 3), dtype=np.uint8)
-
-        # Normalize distances for color mapping
-        d_norm = np.clip(
-            (distances - self.MIN_RANGE_MM) / (self.MAX_RANGE_MM - self.MIN_RANGE_MM),
-            0,
-            1,
-        )
-
-        # Valid status is 5, treat others as potentially invalid
-        valid = status == 5
-
-        # Color gradient: blue (0,0,255) -> cyan -> green -> yellow -> red (255,0,0)
-        # Using HSV-like interpolation through RGB
-        for i in range(len(distances)):
-            if valid[i] and distances[i] >= self.MIN_RANGE_MM:
-                t = d_norm[i]
-                # Blue to Red gradient
-                colors[i, 0] = int(t * 255)  # R increases with distance
-                colors[i, 1] = int((1 - abs(2 * t - 1)) * 200)  # G peaks in middle
-                colors[i, 2] = int((1 - t) * 255)  # B decreases with distance
-            else:
-                # Invalid: gray
-                colors[i] = [128, 128, 128]
-
-        return colors
-
-    def _apply_temporal_filter(
-        self,
-        distances: np.ndarray,
-        filter_strength: float,
-    ) -> np.ndarray:
-        """Apply exponential moving average filtering to distance data.
-
-        Args:
-            distances: Raw distance measurements (64 values in mm)
-            filter_strength: 0.0 = no smoothing, 1.0 = maximum smoothing
-
-        Returns:
-            Filtered distance array
-        """
-        # Alpha controls how much of the new value to use
-        # Higher filter_strength = more smoothing = lower alpha
-        alpha = 1.0 - filter_strength
-
-        if not self.filter_initialized:
-            # Initialize filter buffer with first valid frame
-            self.filtered_distances = distances.copy()
-            self.filter_initialized = True
-            return distances
-
-        # EMA formula: filtered = alpha * new + (1 - alpha) * old
-        self.filtered_distances = (
-            alpha * distances + (1.0 - alpha) * self.filtered_distances
-        )
-
-        return self.filtered_distances.copy()
-
-    def _rotation_matrix_from_vectors(
-        self,
-        vec_from: np.ndarray,
-        vec_to: np.ndarray,
-    ) -> np.ndarray:
-        """Compute rotation matrix that rotates vec_from to vec_to.
-
-        Uses Rodrigues' rotation formula.
-        """
-        # Normalize inputs
-        a = vec_from / np.linalg.norm(vec_from)
-        b = vec_to / np.linalg.norm(vec_to)
-
-        # Handle parallel vectors
-        dot = np.dot(a, b)
-        if dot > 0.9999:
-            return np.eye(3)
-        if dot < -0.9999:
-            # 180 degree rotation - find perpendicular axis
-            perp = np.array([1, 0, 0]) if abs(a[0]) < 0.9 else np.array([0, 1, 0])
-            axis = np.cross(a, perp)
-            axis = axis / np.linalg.norm(axis)
-            return 2 * np.outer(axis, axis) - np.eye(3)
-
-        # Rodrigues' formula
-        v = np.cross(a, b)
-        s = np.linalg.norm(v)  # sin(angle)
-        c = dot  # cos(angle)
-
-        # Skew-symmetric cross-product matrix
-        vx = np.array([
-            [0, -v[2], v[1]],
-            [v[2], 0, -v[0]],
-            [-v[1], v[0], 0],
-        ])
-
-        # Rotation matrix: R = I + vx + vx^2 * (1-c)/s^2
-        return np.eye(3) + vx + vx @ vx * ((1 - c) / (s * s))
-
-    def _fit_plane(
-        self,
-        points: np.ndarray,
-        padding: float = 1.2,
-    ) -> tuple[np.ndarray, np.ndarray, float] | None:
-        """Fit a plane to 3D points and return position, orientation, and size.
-
-        Fits plane using least squares: z = ax + by + c
-
-        Args:
-            points: Nx3 array of valid 3D points
-            padding: Multiplier for plane size (1.0 = exact fit)
-
-        Returns:
-            Tuple of (position, wxyz_quaternion, size) or None if fitting fails
-        """
-        if len(points) < 3:
-            return None
-
-        # Extract coordinates
-        x = points[:, 0]
-        y = points[:, 1]
-        z = points[:, 2]
-
-        # Build design matrix for least squares: [x, y, 1] @ [a, b, c].T = z
-        A = np.column_stack([x, y, np.ones_like(x)])
-
-        try:
-            # Solve least squares: find a, b, c that minimize ||Ax - z||^2
-            coeffs, _, _, _ = np.linalg.lstsq(A, z, rcond=None)
-            a, b, c = coeffs
-        except np.linalg.LinAlgError:
-            return None
-
-        # Plane equation: z = ax + by + c
-        # Normal vector: n = (-a, -b, 1) (unnormalized)
-        normal = np.array([-a, -b, 1.0])
-        normal = normal / np.linalg.norm(normal)
-
-        # Compute centroid of points
-        centroid = points.mean(axis=0)
-
-        # Compute plane size based on XY span of points
-        x_span = x.max() - x.min()
-        y_span = y.max() - y.min()
-        plane_size = max(x_span, y_span) * padding
-
-        # Ensure minimum size for visibility
-        plane_size = max(plane_size, 0.05)  # At least 5cm
-
-        # Position: centroid adjusted to lie on fitted plane
-        plane_z = a * centroid[0] + b * centroid[1] + c
-        position = np.array([centroid[0], centroid[1], plane_z])
-
-        # Build rotation matrix to align Z-axis with plane normal
-        rotation = self._rotation_matrix_from_vectors(
-            np.array([0, 0, 1]),
-            normal,
-        )
-
-        # Convert rotation matrix to quaternion (wxyz format)
-        r = Rotation.from_matrix(rotation)
-        quat_xyzw = r.as_quat()  # scipy returns xyzw
-        wxyz = np.array([quat_xyzw[3], quat_xyzw[0], quat_xyzw[1], quat_xyzw[2]])
-
-        return position, wxyz, plane_size
-
-    def serial_reader(self):
-        """Background thread to read serial data."""
-        print("Serial reader thread started")
-        while self.running:
-            try:
-                if self.serial and self.serial.is_open:
-                    line = self.serial.readline()
-                    if line:
-                        line_str = line.decode("utf-8", errors="ignore").strip()
-                        if line_str.startswith("{"):
-                            try:
-                                data = json.loads(line_str)
-                                if "distances" in data and "status" in data:
-                                    with self.data_lock:
-                                        self.distances = np.array(data["distances"], dtype=np.float32)
-                                        self.status = np.array(data["status"], dtype=np.uint8)
-                                    # Track data FPS
-                                    self.frame_count += 1
-                                    now = time.time()
-                                    elapsed = now - self.last_fps_time
-                                    if elapsed >= 1.0:
-                                        self.data_fps = self.frame_count / elapsed
-                                        self.frame_count = 0
-                                        self.last_fps_time = now
-                            except json.JSONDecodeError:
-                                pass
-            except (serial.SerialException, OSError):
-                # Expected during shutdown
-                if self.running:
-                    print("Serial connection lost")
-                break
+        self.serial_reader = SerialReader(port, baud)
+        self.zone_angles = compute_zone_angles()
+        self.temporal_filter = TemporalFilter()
 
     def run(self, host: str = "0.0.0.0", port: int = 8080):
         """Start the viewer."""
-        # Connect to serial
-        print(f"Connecting to {self.port} at {self.baud} baud...")
-        self.serial = serial.Serial(self.port, self.baud, timeout=1)
-        time.sleep(2)  # Wait for ESP32 to initialize
-        self.serial.reset_input_buffer()
-        print("Serial connected.")
-
-        # Start serial reader thread
-        self.running = True
-        reader_thread = threading.Thread(target=self.serial_reader, daemon=True)
-        reader_thread.start()
+        # Connect and start serial reader
+        self.serial_reader.connect()
+        self.serial_reader.start()
 
         # Start Viser server
         server = viser.ViserServer(host=host, port=port)
@@ -345,64 +42,20 @@ class VL53L5CXViewer:
             client.camera.near = 0.001  # 1mm near clipping for close-up viewing
             client.camera.fov = 0.35  # ~20° FOV for less perspective distortion
 
-        # Add small coordinate frame above the texture plane (z=0.0001)
+        # Setup scene
         server.scene.add_frame("/origin", axes_length=0.002, axes_radius=0.0001)
+        create_grid(server)
 
-        # Add a grid on the XY plane for reference
-        grid_size = 2.0  # meters
-        grid_points = []
-        for i in range(-10, 11):
-            # Lines parallel to X
-            grid_points.append([[-grid_size, i * 0.2, 0], [grid_size, i * 0.2, 0]])
-            # Lines parallel to Y
-            grid_points.append([[i * 0.2, -grid_size, 0], [i * 0.2, grid_size, 0]])
-
-        for idx, (start, end) in enumerate(grid_points):
-            server.scene.add_spline_catmull_rom(
-                f"/grid/line_{idx}",
-                positions=np.array([start, end]),
-                color=(160, 160, 160),
-                line_width=1.0,
-            )
-
-        # Add Pololu VL53L5CX board representation
-        # Board dimensions: 13mm x 18mm x 1mm (width x length x height)
-        # Measured from Pololu VL53L5CX carrier board with calipers
-        board_width = 0.013  # 13mm in metres
-        board_length = 0.018  # 18mm in metres
-        board_height = 0.001  # 1mm in metres
-
-        # Create box with top face at z=0
-        board_mesh = trimesh.creation.box(extents=[board_width, board_length, board_height])
-        board_mesh.vertices[:, 2] -= board_height / 2
-
-        # Load texture and apply to box
         assets_dir = Path(__file__).parent.parent / "assets"
-        texture_path = assets_dir / "vl53l5cx-top.jpg"
-        if texture_path.exists():
-            texture_image = Image.open(texture_path)
-            # UV coordinates based on vertex x,y positions (maps top face correctly)
-            uv = np.zeros((len(board_mesh.vertices), 2))
-            for i, v in enumerate(board_mesh.vertices):
-                uv[i, 0] = (v[0] + board_width / 2) / board_width
-                uv[i, 1] = (v[1] + board_length / 2) / board_length
-            material = trimesh.visual.material.PBRMaterial(
-                baseColorTexture=texture_image,
-                metallicFactor=0.0,
-                roughnessFactor=1.0,
-            )
-            board_mesh.visual = trimesh.visual.TextureVisuals(uv=uv, material=material)
-        else:
-            board_mesh.visual.face_colors = [0, 100, 0, 255]  # Green fallback
+        create_board_mesh(server, assets_dir)
 
-        server.scene.add_mesh_trimesh("/sensor/board", mesh=board_mesh)
+        zone_rays = create_zone_rays(server, self.zone_angles)
 
-        # Add info panel
+        # Setup GUI
         with server.gui.add_folder("Sensor Info"):
             distance_text = server.gui.add_text("Status", initial_value="Waiting...")
             freq_text = server.gui.add_text("Frequency (Hz)", initial_value="0")
 
-        # Add settings panel
         with server.gui.add_folder("Settings"):
             point_size_slider = server.gui.add_slider(
                 "Point Size",
@@ -435,7 +88,7 @@ class VL53L5CXViewer:
             def _on_filter_toggle(event: viser.GuiEvent) -> None:
                 filter_strength_slider.disabled = not filter_checkbox.value
                 if not filter_checkbox.value:
-                    self.filter_initialized = False
+                    self.temporal_filter.reset()
 
             # Plane fitting controls
             server.gui.add_markdown("---")
@@ -444,53 +97,26 @@ class VL53L5CXViewer:
                 initial_value=False,
             )
 
-        # Create zone ray visualization (64 rays showing discrete sampling directions)
-        # Sensor reports z-distance (perpendicular), so rays end at flat planes
-        min_z = self.MIN_RANGE_MM / 1000  # 20mm in metres
-        max_z = self.MAX_RANGE_MM / 1000  # 4000mm in metres
-        zone_rays = []
-        for i in range(self.NUM_ZONES):
-            # Rays from min to max z-distance (flat planes, not curved surfaces)
-            start = [
-                min_z * self.tan_x[i],
-                min_z * self.tan_y[i],
-                min_z,
-            ]
-            end = [
-                max_z * self.tan_x[i],
-                max_z * self.tan_y[i],
-                max_z,
-            ]
-            ray = server.scene.add_spline_catmull_rom(
-                f"/sensor/rays/ray_{i}",
-                positions=np.array([start, end], dtype=np.float32),
-                color=(100, 150, 255),
-                line_width=1.0,
-            )
-            zone_rays.append(ray)
-
         # Main visualization loop
         try:
             while True:
                 frame_start = time.time()
 
-                with self.data_lock:
-                    distances = self.distances.copy()
-                    status = self.status.copy()
+                distances, status = self.serial_reader.get_data()
 
                 # Apply temporal filtering if enabled
                 if filter_checkbox.value:
-                    distances = self._apply_temporal_filter(
+                    distances = self.temporal_filter.apply(
                         distances, filter_strength_slider.value
                     )
 
                 if np.any(distances > 0):
                     # Convert to 3D points
-                    points = self.distances_to_points(distances)
-                    colors = self.get_colors(distances, status)
+                    points = distances_to_points(distances, self.zone_angles)
+                    colors = get_colors(distances, status)
 
                     # Filter out invalid points (keep only valid ones for display)
-                    valid_mask = (status == 5) & (distances >= self.MIN_RANGE_MM)
+                    valid_mask = (status == 5) & (distances >= config.MIN_RANGE_MM)
 
                     if np.any(valid_mask):
                         server.scene.add_point_cloud(
@@ -503,7 +129,7 @@ class VL53L5CXViewer:
 
                         # Plane fitting visualization
                         if fit_plane_checkbox.value and np.sum(valid_mask) >= 3:
-                            plane_fit = self._fit_plane(points[valid_mask])
+                            plane_fit = fit_plane(points[valid_mask])
                             if plane_fit is not None:
                                 pos, wxyz, size = plane_fit
                                 server.scene.add_box(
@@ -517,7 +143,10 @@ class VL53L5CXViewer:
 
                         # Update info
                         valid_distances = distances[valid_mask]
-                        distance_text.value = f"Range: {valid_distances.min():.0f}-" f"{valid_distances.max():.0f}mm"
+                        distance_text.value = (
+                            f"Range: {valid_distances.min():.0f}-"
+                            f"{valid_distances.max():.0f}mm"
+                        )
                     else:
                         distance_text.value = "No valid data"
 
@@ -529,7 +158,7 @@ class VL53L5CXViewer:
                         pass
 
                 # Update frequency display (actual sensor data rate)
-                freq_text.value = f"{self.data_fps:.1f}"
+                freq_text.value = f"{self.serial_reader.data_fps:.1f}"
 
                 # Update zone rays visibility
                 for ray in zone_rays:
@@ -543,9 +172,7 @@ class VL53L5CXViewer:
         except KeyboardInterrupt:
             print("\nShutting down...")
         finally:
-            self.running = False
-            if self.serial:
-                self.serial.close()
+            self.serial_reader.stop()
 
 
 def main():
@@ -556,9 +183,15 @@ def main():
         default="/dev/cu.usbserial-0001",
         help="Serial port (default: /dev/cu.usbserial-0001)",
     )
-    parser.add_argument("--baud", "-b", type=int, default=115200, help="Baud rate (default: 115200)")
-    parser.add_argument("--host", default="0.0.0.0", help="Viser server host (default: 0.0.0.0)")
-    parser.add_argument("--viser-port", type=int, default=8080, help="Viser server port (default: 8080)")
+    parser.add_argument(
+        "--baud", "-b", type=int, default=115200, help="Baud rate (default: 115200)"
+    )
+    parser.add_argument(
+        "--host", default="0.0.0.0", help="Viser server host (default: 0.0.0.0)"
+    )
+    parser.add_argument(
+        "--viser-port", type=int, default=8080, help="Viser server port (default: 8080)"
+    )
     args = parser.parse_args()
 
     viewer = VL53L5CXViewer(port=args.port, baud=args.baud)
