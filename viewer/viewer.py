@@ -97,6 +97,9 @@ class VL53L5CXViewer:
                 initial_value=False,
             )
 
+        # Plane handle for visibility control
+        plane_handle = None
+
         # Main visualization loop
         try:
             while True:
@@ -132,7 +135,7 @@ class VL53L5CXViewer:
                             plane_fit = fit_plane(points[valid_mask])
                             if plane_fit is not None:
                                 pos, wxyz, size = plane_fit
-                                server.scene.add_box(
+                                plane_handle = server.scene.add_box(
                                     "/sensor/fitted_plane",
                                     dimensions=(size, size, 0.0001),
                                     position=pos,
@@ -150,12 +153,9 @@ class VL53L5CXViewer:
                     else:
                         distance_text.value = "No valid data"
 
-                # Remove plane if checkbox is disabled or no valid points
-                if not fit_plane_checkbox.value:
-                    try:
-                        server.scene.remove("/sensor/fitted_plane")
-                    except Exception:
-                        pass
+                # Hide plane if checkbox is disabled
+                if plane_handle is not None:
+                    plane_handle.visible = fit_plane_checkbox.value
 
                 # Update frequency display (actual sensor data rate)
                 freq_text.value = f"{self.serial_reader.data_fps:.1f}"
