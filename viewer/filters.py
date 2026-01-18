@@ -44,25 +44,21 @@ class TemporalFilter:
         return self.filtered_distances.copy()
 
 
-def fit_plane(
+def _fit_plane_from_points(
     points: np.ndarray,
     padding: float = 1.2,
 ) -> tuple[np.ndarray, np.ndarray, float] | None:
-    """Fit a plane to 3D points and return position, orientation, and size.
+    """Fit a plane to 3D points using least squares and return visualization params.
 
-    Fits plane using least squares: z = ax + by + c
+    Internal helper that fits z = ax + by + c and returns position, orientation, size.
 
     Args:
-        points: Nx3 array of valid 3D points
+        points: Nx3 array of 3D points (must have at least 3 points)
         padding: Multiplier for plane size (1.0 = exact fit)
 
     Returns:
         Tuple of (position, wxyz_quaternion, size) or None if fitting fails
     """
-    if len(points) < 3:
-        return None
-
-    # Extract coordinates
     x = points[:, 0]
     y = points[:, 1]
     z = points[:, 2]
@@ -71,7 +67,6 @@ def fit_plane(
     A = np.column_stack([x, y, np.ones_like(x)])
 
     try:
-        # Solve least squares: find a, b, c that minimize ||Ax - z||^2
         coeffs, _, _, _ = np.linalg.lstsq(A, z, rcond=None)
         a, b, c = coeffs
     except np.linalg.LinAlgError:
@@ -109,3 +104,88 @@ def fit_plane(
     wxyz = np.array([quat_xyzw[3], quat_xyzw[0], quat_xyzw[1], quat_xyzw[2]])
 
     return position, wxyz, plane_size
+
+
+def fit_plane(
+    points: np.ndarray,
+    padding: float = 1.2,
+) -> tuple[np.ndarray, np.ndarray, float] | None:
+    """Fit a plane to 3D points using least squares.
+
+    Args:
+        points: Nx3 array of valid 3D points
+        padding: Multiplier for plane size (1.0 = exact fit)
+
+    Returns:
+        Tuple of (position, wxyz_quaternion, size) or None if fitting fails
+    """
+    if len(points) < 3:
+        return None
+    return _fit_plane_from_points(points, padding)
+
+
+def fit_plane_ransac(
+    points: np.ndarray,
+    threshold: float = 0.01,
+    iterations: int = 100,
+    padding: float = 1.2,
+) -> tuple[np.ndarray, np.ndarray, float] | None:
+    """Fit a plane to 3D points using RANSAC for robust outlier rejection.
+
+    Args:
+        points: Nx3 array of valid 3D points
+        threshold: Distance threshold (meters) for a point to be considered an inlier
+        iterations: Number of RANSAC iterations
+        padding: Multiplier for plane size (1.0 = exact fit)
+
+    Returns:
+        Tuple of (position, wxyz_quaternion, size) or None if fitting fails
+    """
+    if len(points) < 3:
+        return None
+
+    # Use deterministic seed based on input data for reproducible results
+    # This ensures same points always produce the same fitted plane
+    seed = int(np.abs(points.sum() * 1e6)) % (2**31)
+    rng = np.random.default_rng(seed)
+
+    best_inliers = None
+    best_inlier_count = 0
+
+    for _ in range(iterations):
+        # Randomly sample 3 points to define a plane
+        indices = rng.choice(len(points), 3, replace=False)
+        sample = points[indices]
+
+        # Compute plane from 3 points
+        # Plane defined by point p0 and normal n = (p1-p0) x (p2-p0)
+        p0, p1, p2 = sample
+        v1 = p1 - p0
+        v2 = p2 - p0
+        normal = np.cross(v1, v2)
+
+        # Check for degenerate case (collinear points)
+        norm = np.linalg.norm(normal)
+        if norm < 1e-10:
+            continue
+        normal = normal / norm
+
+        # Compute distance of all points to this plane
+        # Distance = |dot(point - p0, normal)|
+        distances = np.abs(np.dot(points - p0, normal))
+
+        # Count inliers
+        inlier_mask = distances < threshold
+        inlier_count = np.sum(inlier_mask)
+
+        if inlier_count > best_inlier_count:
+            best_inlier_count = inlier_count
+            best_inliers = inlier_mask
+
+    # Need at least 3 inliers to fit a plane
+    if best_inliers is None or best_inlier_count < 3:
+        return None
+
+    # Refit plane using only inliers
+    inlier_points = points[best_inliers]
+    return _fit_plane_from_points(inlier_points, padding)

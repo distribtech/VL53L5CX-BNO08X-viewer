@@ -9,7 +9,7 @@ import numpy as np
 import viser
 
 from . import config
-from .filters import TemporalFilter, fit_plane
+from .filters import TemporalFilter, fit_plane, fit_plane_ransac
 from .geometry import compute_zone_angles, distances_to_points, get_colors
 from .scene import create_board_mesh, create_grid, create_zone_rays
 from .serial_reader import SerialReader
@@ -96,6 +96,32 @@ class VL53L5CXViewer:
                 "Fit Plane",
                 initial_value=False,
             )
+            plane_method_dropdown = server.gui.add_dropdown(
+                "Method",
+                options=["Least Squares", "RANSAC"],
+                initial_value="Least Squares",
+                disabled=True,
+            )
+            ransac_threshold_slider = server.gui.add_slider(
+                "RANSAC Threshold (mm)",
+                min=1,
+                max=50,
+                step=1,
+                initial_value=10,
+                visible=False,
+            )
+
+            @fit_plane_checkbox.on_update
+            def _on_fit_plane_toggle(event: viser.GuiEvent) -> None:
+                plane_method_dropdown.disabled = not fit_plane_checkbox.value
+                if fit_plane_checkbox.value and plane_method_dropdown.value == "RANSAC":
+                    ransac_threshold_slider.visible = True
+                else:
+                    ransac_threshold_slider.visible = False
+
+            @plane_method_dropdown.on_update
+            def _on_plane_method_change(event: viser.GuiEvent) -> None:
+                ransac_threshold_slider.visible = plane_method_dropdown.value == "RANSAC"
 
         # Plane handle for visibility control
         plane_handle = None
@@ -132,7 +158,14 @@ class VL53L5CXViewer:
 
                         # Plane fitting visualization
                         if fit_plane_checkbox.value and np.sum(valid_mask) >= 3:
-                            plane_fit = fit_plane(points[valid_mask])
+                            if plane_method_dropdown.value == "RANSAC":
+                                # Convert mm threshold to meters
+                                threshold_m = ransac_threshold_slider.value / 1000.0
+                                plane_fit = fit_plane_ransac(
+                                    points[valid_mask], threshold=threshold_m
+                                )
+                            else:
+                                plane_fit = fit_plane(points[valid_mask])
                             if plane_fit is not None:
                                 pos, wxyz, size = plane_fit
                                 plane_handle = server.scene.add_box(
