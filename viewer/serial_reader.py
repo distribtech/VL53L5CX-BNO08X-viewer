@@ -71,6 +71,26 @@ class SerialReader:
         with self._data_lock:
             return self.distances.copy(), self.status.copy()
 
+    def _reconnect(self) -> bool:
+        """Attempt to reconnect to serial port.
+
+        Returns:
+            True if reconnection successful, False otherwise
+        """
+        try:
+            if self.serial:
+                try:
+                    self.serial.close()
+                except Exception:
+                    pass
+            self.serial = serial.Serial(self.port, self.baud, timeout=1)
+            time.sleep(0.5)  # Brief wait for device to initialize
+            self.serial.reset_input_buffer()
+            print("Serial reconnected.")
+            return True
+        except (serial.SerialException, OSError):
+            return False
+
     def _read_loop(self):
         """Background thread to read serial data."""
         print("Serial reader thread started")
@@ -102,7 +122,11 @@ class SerialReader:
                             except json.JSONDecodeError:
                                 pass
             except (serial.SerialException, OSError):
-                # Expected during shutdown
-                if self.running:
-                    print("Serial connection lost")
-                break
+                if not self.running:
+                    break
+                print("Serial connection lost, attempting to reconnect...")
+                self._data_fps = 0.0  # Reset FPS indicator
+                while self.running:
+                    if self._reconnect():
+                        break
+                    time.sleep(1)  # Wait before retry
