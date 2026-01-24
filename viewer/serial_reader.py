@@ -22,6 +22,7 @@ class SerialReader:
         # Data storage
         self.distances = np.zeros(config.NUM_ZONES, dtype=np.float32)
         self.status = np.zeros(config.NUM_ZONES, dtype=np.uint8)
+        self.quaternion = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)  # wxyz identity
         self._data_lock = threading.Lock()
 
         # FPS tracking
@@ -62,14 +63,14 @@ class SerialReader:
             self._thread.join(timeout=1)
             self._thread = None
 
-    def get_data(self) -> tuple[np.ndarray, np.ndarray]:
-        """Get a copy of the latest distance and status data.
+    def get_data(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Get a copy of the latest distance, status, and quaternion data.
 
         Returns:
-            Tuple of (distances, status) arrays
+            Tuple of (distances, status, quaternion) arrays
         """
         with self._data_lock:
-            return self.distances.copy(), self.status.copy()
+            return self.distances.copy(), self.status.copy(), self.quaternion.copy()
 
     def _reconnect(self) -> bool:
         """Attempt to reconnect to serial port.
@@ -111,6 +112,10 @@ class SerialReader:
                                         self.status = np.array(
                                             data["status"], dtype=np.uint8
                                         )
+                                        if "quat" in data:
+                                            self.quaternion = np.array(
+                                                data["quat"], dtype=np.float32
+                                            )
                                     # Track data FPS
                                     self._frame_count += 1
                                     now = time.time()

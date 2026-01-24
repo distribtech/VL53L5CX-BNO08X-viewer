@@ -10,7 +10,7 @@ import viser
 
 from . import config
 from .filters import TemporalFilter, fit_plane, fit_plane_ransac
-from .geometry import compute_zone_angles, distances_to_points, get_colors
+from .geometry import compute_zone_angles, distances_to_points, get_colors, rotate_points_by_quaternion
 from .scene import create_board_mesh, create_grid, create_zone_rays
 from .serial_reader import SerialReader
 
@@ -55,6 +55,7 @@ class VL53L5CXViewer:
         with server.gui.add_folder("Sensor Info"):
             distance_text = server.gui.add_text("Status", initial_value="Waiting...")
             freq_text = server.gui.add_text("Frequency (Hz)", initial_value="0")
+            imu_status_text = server.gui.add_text("IMU", initial_value="Not detected")
 
         with server.gui.add_folder("Settings"):
             point_size_slider = server.gui.add_slider(
@@ -66,6 +67,13 @@ class VL53L5CXViewer:
             )
             show_rays_checkbox = server.gui.add_checkbox(
                 "Show Zone Rays",
+                initial_value=True,
+            )
+
+            # IMU rotation controls
+            server.gui.add_markdown("---")
+            imu_rotation_checkbox = server.gui.add_checkbox(
+                "Apply IMU Rotation",
                 initial_value=True,
             )
 
@@ -131,7 +139,7 @@ class VL53L5CXViewer:
             while True:
                 frame_start = time.time()
 
-                distances, status = self.serial_reader.get_data()
+                distances, status, quaternion = self.serial_reader.get_data()
 
                 # Apply temporal filtering if enabled
                 if filter_checkbox.value:
@@ -139,9 +147,17 @@ class VL53L5CXViewer:
                         distances, filter_strength_slider.value
                     )
 
+                # Check if IMU is providing data (non-identity quaternion)
+                imu_active = not np.allclose(quaternion, [1.0, 0.0, 0.0, 0.0], atol=0.01)
+                imu_status_text.value = "Active" if imu_active else "Idle"
+
                 if np.any(distances > 0):
                     # Convert to 3D points
                     points = distances_to_points(distances, self.zone_angles)
+
+                    # Apply IMU rotation if enabled and IMU is active
+                    if imu_rotation_checkbox.value and imu_active:
+                        points = rotate_points_by_quaternion(points, quaternion)
                     colors = get_colors(distances, status)
 
                     # Filter out invalid points (keep only valid ones for display)

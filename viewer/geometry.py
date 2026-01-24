@@ -134,6 +134,25 @@ def get_colors(distances: np.ndarray, status: np.ndarray) -> np.ndarray:
     return colors
 
 
+def rotate_points_by_quaternion(points: np.ndarray, quaternion: np.ndarray) -> np.ndarray:
+    """Rotate points using a quaternion.
+
+    Args:
+        points: Nx3 array of 3D points
+        quaternion: [w, x, y, z] quaternion (wxyz format from BNO08X)
+
+    Returns:
+        Rotated Nx3 array of 3D points
+    """
+    from scipy.spatial.transform import Rotation
+
+    # scipy uses xyzw format, convert from wxyz
+    quat_xyzw = np.array([quaternion[1], quaternion[2], quaternion[3], quaternion[0]])
+    rotation = Rotation.from_quat(quat_xyzw)
+
+    return rotation.apply(points)
+
+
 def rotation_matrix_from_vectors(vec_from: np.ndarray, vec_to: np.ndarray) -> np.ndarray:
     """Compute rotation matrix that rotates vec_from to vec_to.
 
