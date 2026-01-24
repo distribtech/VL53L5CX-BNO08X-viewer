@@ -3,7 +3,34 @@
 import numpy as np
 import pytest
 
-from viewer.geometry import rotate_points_by_quaternion, compute_zone_angles, distances_to_points
+from viewer.geometry import correct_imu_to_tof_frame, rotate_points_by_quaternion, compute_zone_angles, distances_to_points
+
+
+class TestCorrectImuToTofFrame:
+    """Tests for IMU-to-ToF frame correction."""
+
+    def test_applies_90_degree_clockwise_rotation(self):
+        """Correction should rotate 90° clockwise around Z."""
+        # Identity IMU quaternion
+        identity = np.array([1, 0, 0, 0], dtype=np.float32)
+
+        corrected = correct_imu_to_tof_frame(identity)
+
+        # Result should be 90° clockwise around Z: [cos(-45°), 0, 0, sin(-45°)]
+        expected = np.array([0.7071068, 0, 0, -0.7071068], dtype=np.float32)
+        np.testing.assert_allclose(corrected, expected, atol=1e-5)
+
+    def test_correction_composes_with_imu_rotation(self):
+        """Correction should compose correctly with IMU rotation."""
+        # If IMU reports 90° counterclockwise (the physical offset),
+        # correction should result in identity
+        imu_90_ccw = np.array([0.7071068, 0, 0, 0.7071068], dtype=np.float32)
+
+        corrected = correct_imu_to_tof_frame(imu_90_ccw)
+
+        # 90° CW * 90° CCW = identity
+        expected_identity = np.array([1, 0, 0, 0], dtype=np.float32)
+        np.testing.assert_allclose(np.abs(corrected), np.abs(expected_identity), atol=1e-5)
 
 
 class TestRotatePointsByQuaternion:

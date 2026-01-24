@@ -10,7 +10,7 @@ import viser
 
 from . import config
 from .filters import TemporalFilter, fit_plane, fit_plane_ransac
-from .geometry import compute_zone_angles, distances_to_points, get_colors, rotate_points_by_quaternion
+from .geometry import compute_zone_angles, correct_imu_to_tof_frame, distances_to_points, get_colors, rotate_points_by_quaternion
 from .scene import create_board_mesh, create_grid, create_zone_rays
 from .serial_reader import SerialReader
 
@@ -47,7 +47,7 @@ class VL53L5CXViewer:
         create_grid(server)
 
         assets_dir = Path(__file__).parent.parent / "assets"
-        create_board_mesh(server, assets_dir)
+        board_mesh = create_board_mesh(server, assets_dir)
 
         zone_rays = create_zone_rays(server, self.zone_angles)
 
@@ -151,13 +151,21 @@ class VL53L5CXViewer:
                 imu_active = not np.allclose(quaternion, [1.0, 0.0, 0.0, 0.0], atol=0.01)
                 imu_status_text.value = "Active" if imu_active else "Idle"
 
+                # Apply frame correction for IMU-to-ToF alignment
+                corrected_quat = correct_imu_to_tof_frame(quaternion) if imu_active else quaternion
+
                 if np.any(distances > 0):
                     # Convert to 3D points
                     points = distances_to_points(distances, self.zone_angles)
 
                     # Apply IMU rotation if enabled and IMU is active
                     if imu_rotation_checkbox.value and imu_active:
-                        points = rotate_points_by_quaternion(points, quaternion)
+                        points = rotate_points_by_quaternion(points, corrected_quat)
+                        # Also rotate the board mesh to match sensor orientation
+                        board_mesh.wxyz = corrected_quat
+                    else:
+                        # Reset board to identity orientation
+                        board_mesh.wxyz = (1.0, 0.0, 0.0, 0.0)
                     colors = get_colors(distances, status)
 
                     # Filter out invalid points (keep only valid ones for display)

@@ -134,6 +134,35 @@ def get_colors(distances: np.ndarray, status: np.ndarray) -> np.ndarray:
     return colors
 
 
+def correct_imu_to_tof_frame(quaternion: np.ndarray) -> np.ndarray:
+    """Apply frame correction for IMU-to-ToF sensor alignment.
+
+    The BNO08X IMU is mounted 90° counterclockwise (around Z) relative to
+    the VL53L5CX ToF sensor. This function applies a 90° clockwise correction.
+
+    Args:
+        quaternion: [w, x, y, z] quaternion from IMU (wxyz format)
+
+    Returns:
+        Corrected quaternion in wxyz format
+    """
+    from scipy.spatial.transform import Rotation
+
+    # Convert IMU quaternion from wxyz to xyzw for scipy
+    imu_xyzw = np.array([quaternion[1], quaternion[2], quaternion[3], quaternion[0]])
+    imu_rot = Rotation.from_quat(imu_xyzw)
+
+    # 90° clockwise around Z = -90° around Z
+    correction = Rotation.from_euler('z', -90, degrees=True)
+
+    # Apply correction: corrected = imu * correction (correction in sensor's local frame)
+    corrected_rot = imu_rot * correction
+
+    # Convert back to wxyz format
+    corrected_xyzw = corrected_rot.as_quat()
+    return np.array([corrected_xyzw[3], corrected_xyzw[0], corrected_xyzw[1], corrected_xyzw[2]])
+
+
 def rotate_points_by_quaternion(points: np.ndarray, quaternion: np.ndarray) -> np.ndarray:
     """Rotate points using a quaternion.
 
