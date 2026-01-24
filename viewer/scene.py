@@ -89,6 +89,47 @@ def create_board_mesh(server: viser.ViserServer, assets_dir: Path):
     return server.scene.add_mesh_trimesh("/sensor/board", mesh=board_mesh)
 
 
+def create_imu_board_mesh(server: viser.ViserServer, assets_dir: Path):
+    """Create the GY-BNO08X IMU board mesh.
+
+    Args:
+        server: Viser server instance
+        assets_dir: Path to assets directory containing textures
+
+    Returns:
+        Mesh handle
+    """
+    # GY-BNO08X board dimensions: 15mm x 26mm x 1mm (width x length x height)
+    # Board is portrait orientation (taller than wide)
+    board_width = 0.015  # 15mm
+    board_length = 0.026  # 26mm
+    board_height = 0.001  # 1mm
+
+    # Create box centered at origin
+    board_mesh = trimesh.creation.box(extents=[board_width, board_length, board_height])
+
+    # Load texture and apply to box
+    texture_path = assets_dir / "bno08x-top.jpg"
+    if texture_path.exists():
+        texture_image = Image.open(texture_path)
+        # UV coordinates based on vertex x,y positions (maps top face correctly)
+        uv = np.zeros((len(board_mesh.vertices), 2))
+        for i, v in enumerate(board_mesh.vertices):
+            uv[i, 0] = (v[0] + board_width / 2) / board_width
+            uv[i, 1] = (v[1] + board_length / 2) / board_length
+        material = trimesh.visual.material.PBRMaterial(
+            baseColorTexture=texture_image,
+            metallicFactor=0.0,
+            roughnessFactor=1.0,
+        )
+        board_mesh.visual = trimesh.visual.TextureVisuals(uv=uv, material=material)
+    else:
+        # Purple fallback color
+        board_mesh.visual.face_colors = [128, 0, 128, 255]
+
+    return server.scene.add_mesh_trimesh("/sensor/imu_board", mesh=board_mesh)
+
+
 def create_zone_rays(
     server: viser.ViserServer,
     zone_angles: ZoneAngles,

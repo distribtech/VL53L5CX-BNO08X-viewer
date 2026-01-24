@@ -11,7 +11,7 @@ import viser
 from . import config
 from .filters import TemporalFilter, fit_plane, fit_plane_ransac
 from .geometry import compute_zone_angles, correct_imu_to_tof_frame, distances_to_points, get_colors, rotate_points_by_quaternion
-from .scene import create_board_mesh, create_grid, create_zone_rays
+from .scene import create_board_mesh, create_grid, create_imu_board_mesh, create_zone_rays
 from .serial_reader import SerialReader
 
 
@@ -47,7 +47,11 @@ class VL53L5CXViewer:
         create_grid(server)
 
         assets_dir = Path(__file__).parent.parent / "assets"
-        board_mesh = create_board_mesh(server, assets_dir)
+        tof_board_mesh = create_board_mesh(server, assets_dir)
+        imu_board_mesh = create_imu_board_mesh(server, assets_dir)
+
+        # ToF is ~1 inch (25.4mm) in -Y direction from IMU on breadboard
+        IMU_TO_TOF_OFFSET = np.array([0.0, -0.0254, 0.0])  # meters
 
         zone_rays = create_zone_rays(server, self.zone_angles)
 
@@ -160,12 +164,28 @@ class VL53L5CXViewer:
 
                     # Apply IMU rotation if enabled and IMU is active
                     if imu_rotation_checkbox.value and imu_active:
+                        # Rotate the offset vector to get ToF position in world frame
+                        tof_position = rotate_points_by_quaternion(
+                            IMU_TO_TOF_OFFSET.reshape(1, 3), corrected_quat
+                        )[0]
+
+                        # Points are in ToF's local frame, transform to world:
+                        # 1. Rotate points by IMU orientation
+                        # 2. Add ToF position offset
                         points = rotate_points_by_quaternion(points, corrected_quat)
-                        # Also rotate the board mesh to match sensor orientation
-                        board_mesh.wxyz = corrected_quat
+                        points = points + tof_position
+
+                        # Update board positions
+                        imu_board_mesh.wxyz = corrected_quat
+                        imu_board_mesh.position = (0.0, 0.0, 0.0)  # IMU at origin
+                        tof_board_mesh.wxyz = corrected_quat
+                        tof_board_mesh.position = tuple(tof_position)
                     else:
-                        # Reset board to identity orientation
-                        board_mesh.wxyz = (1.0, 0.0, 0.0, 0.0)
+                        # Reset boards to identity orientation and default positions
+                        imu_board_mesh.wxyz = (1.0, 0.0, 0.0, 0.0)
+                        imu_board_mesh.position = (0.0, 0.0, 0.0)
+                        tof_board_mesh.wxyz = (1.0, 0.0, 0.0, 0.0)
+                        tof_board_mesh.position = tuple(IMU_TO_TOF_OFFSET)
                     colors = get_colors(distances, status)
 
                     # Filter out invalid points (keep only valid ones for display)
