@@ -135,6 +135,66 @@ class VL53L5CXViewer:
             def _on_plane_method_change(event: viser.GuiEvent) -> None:
                 ransac_threshold_slider.visible = plane_method_dropdown.value == "RANSAC"
 
+        # Mapping mode controls
+        with server.gui.add_folder("Mapping"):
+            mapping_checkbox = server.gui.add_checkbox(
+                "Mapping Mode",
+                initial_value=False,
+            )
+            voxel_size_slider = server.gui.add_slider(
+                "Voxel Size (mm)",
+                min=5,
+                max=50,
+                step=5,
+                initial_value=10,
+            )
+            max_points_slider = server.gui.add_slider(
+                "Max Points (k)",
+                min=10,
+                max=500,
+                step=10,
+                initial_value=100,
+            )
+            point_count_text = server.gui.add_text("Points", initial_value="0")
+            clear_button = server.gui.add_button("Clear Map")
+
+        # Accumulated points storage for mapping mode
+        accumulated_points: list[np.ndarray] = []
+        accumulated_colors: list[np.ndarray] = []
+
+        def clear_accumulated():
+            nonlocal accumulated_points, accumulated_colors
+            accumulated_points = []
+            accumulated_colors = []
+            point_count_text.value = "0"
+
+        @clear_button.on_click
+        def _on_clear_click(event: viser.GuiEvent) -> None:
+            clear_accumulated()
+
+        @mapping_checkbox.on_update
+        def _on_mapping_toggle(event: viser.GuiEvent) -> None:
+            if not mapping_checkbox.value:
+                clear_accumulated()
+
+        def voxel_downsample(points: np.ndarray, colors: np.ndarray, voxel_size: float) -> tuple[np.ndarray, np.ndarray]:
+            """Downsample points using voxel grid."""
+            if len(points) == 0:
+                return points, colors
+            # Quantize points to voxel grid
+            voxel_indices = np.floor(points / voxel_size).astype(np.int32)
+            # Use dictionary to keep one point per voxel (last one wins)
+            voxel_dict: dict[tuple, tuple[np.ndarray, np.ndarray]] = {}
+            for i, idx in enumerate(voxel_indices):
+                key = tuple(idx)
+                voxel_dict[key] = (points[i], colors[i])
+            # Extract unique points
+            if len(voxel_dict) == 0:
+                return np.empty((0, 3), dtype=np.float32), np.empty((0, 3), dtype=np.uint8)
+            unique_points = np.array([v[0] for v in voxel_dict.values()], dtype=np.float32)
+            unique_colors = np.array([v[1] for v in voxel_dict.values()], dtype=np.uint8)
+            return unique_points, unique_colors
+
         # Plane handle for visibility control
         plane_handle = None
 
@@ -192,13 +252,57 @@ class VL53L5CXViewer:
                     valid_mask = (status == 5) & (distances >= config.MIN_RANGE_MM)
 
                     if np.any(valid_mask):
-                        server.scene.add_point_cloud(
-                            "/sensor/points",
-                            points=points[valid_mask].astype(np.float32),
-                            colors=colors[valid_mask],
-                            point_size=point_size_slider.value,
-                            point_shape="circle",
-                        )
+                        valid_points = points[valid_mask].astype(np.float32)
+                        valid_colors = colors[valid_mask]
+
+                        # Mapping mode: accumulate points
+                        if mapping_checkbox.value:
+                            accumulated_points.append(valid_points)
+                            accumulated_colors.append(valid_colors)
+
+                            # Combine all accumulated points
+                            all_points = np.vstack(accumulated_points)
+                            all_colors = np.vstack(accumulated_colors)
+
+                            # Apply voxel downsampling
+                            voxel_size_m = voxel_size_slider.value / 1000.0
+                            all_points, all_colors = voxel_downsample(
+                                all_points, all_colors, voxel_size_m
+                            )
+
+                            # Enforce max points limit
+                            max_points = max_points_slider.value * 1000
+                            if len(all_points) > max_points:
+                                # Keep most recent points
+                                all_points = all_points[-max_points:]
+                                all_colors = all_colors[-max_points:]
+
+                            # Store downsampled result back (in-place to avoid scope issues)
+                            accumulated_points.clear()
+                            accumulated_points.append(all_points)
+                            accumulated_colors.clear()
+                            accumulated_colors.append(all_colors)
+
+                            # Update point count display
+                            point_count_text.value = f"{len(all_points):,}"
+
+                            # Display accumulated map
+                            server.scene.add_point_cloud(
+                                "/sensor/points",
+                                points=all_points,
+                                colors=all_colors,
+                                point_size=point_size_slider.value,
+                                point_shape="circle",
+                            )
+                        else:
+                            # Normal mode: just show current frame
+                            server.scene.add_point_cloud(
+                                "/sensor/points",
+                                points=valid_points,
+                                colors=valid_colors,
+                                point_size=point_size_slider.value,
+                                point_shape="circle",
+                            )
 
                         # Plane fitting visualization
                         if fit_plane_checkbox.value and np.sum(valid_mask) >= 3:
