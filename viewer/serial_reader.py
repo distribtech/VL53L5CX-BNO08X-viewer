@@ -105,13 +105,14 @@ class SerialReader:
                             try:
                                 data = json.loads(line_str)
                                 if "distances" in data and "status" in data:
+                                    distances = data["distances"]
+                                    status = data["status"]
+                                    # Validate array lengths to handle corrupted serial data
+                                    if len(distances) != config.NUM_ZONES or len(status) != config.NUM_ZONES:
+                                        continue
                                     with self._data_lock:
-                                        self.distances = np.array(
-                                            data["distances"], dtype=np.float32
-                                        )
-                                        self.status = np.array(
-                                            data["status"], dtype=np.uint8
-                                        )
+                                        self.distances = np.array(distances, dtype=np.float32)
+                                        self.status = np.array(status, dtype=np.uint8)
                                         if "quat" in data:
                                             self.quaternion = np.array(
                                                 data["quat"], dtype=np.float32
