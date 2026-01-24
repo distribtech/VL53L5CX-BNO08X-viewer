@@ -1,28 +1,36 @@
 /*
- * VL53L5CX ToF Sensor Reader for ESP32
+ * VL53L5CX ToF Sensor + BNO08X IMU Reader for ESP32
  *
- * Reads 8x8 distance data from VL53L5CX and outputs JSON over serial.
- * Designed for use with the Pololu VL53L5CX carrier board.
+ * Reads 8x8 distance data from VL53L5CX and orientation from BNO08X,
+ * outputs JSON over serial.
  *
- * Wiring:
+ * Wiring (both sensors share I2C bus):
  *   VIN -> 3V3
  *   GND -> GND
  *   SDA -> GPIO 21
  *   SCL -> GPIO 22
- *   LPn -> GPIO 19 (set HIGH to enable I2C)
+ *   LPn -> GPIO 19 (VL53L5CX enable, set HIGH)
  */
 
 #include <Wire.h>
 #include <SparkFun_VL53L5CX_Library.h>
+#include <SparkFun_BNO08x_Arduino_Library.h>
 
 // Pin definitions
 #define SDA_PIN 21
 #define SCL_PIN 22
 #define LPN_PIN 19
 
-// Sensor instance
+// VL53L5CX ToF sensor instance
 SparkFun_VL53L5CX sensor;
 VL53L5CX_ResultsData measurementData;
+
+// BNO08X IMU instance
+BNO08x imu;
+bool imuAvailable = false;
+
+// Current quaternion (wxyz format)
+float quatW = 1.0, quatX = 0.0, quatY = 0.0, quatZ = 0.0;
 
 // I2C speed - use 1MHz for fast data transfer
 #define I2C_SPEED 1000000
@@ -64,13 +72,44 @@ void setup() {
   sensor.startRanging();
 
   Serial.println("{\"status\":\"ranging_started\",\"resolution\":\"8x8\",\"frequency_hz\":15}");
+
+  // Initialize BNO08X IMU (shares I2C bus with VL53L5CX)
+  // Try default address 0x4A first, then alternate 0x4B
+  if (imu.begin(0x4A, Wire)) {
+    imuAvailable = true;
+  } else if (imu.begin(0x4B, Wire)) {
+    imuAvailable = true;
+  }
+
+  if (imuAvailable) {
+    // Enable rotation vector report at 50ms interval (20Hz)
+    imu.enableRotationVector(50);
+    Serial.println("{\"status\":\"imu_ready\"}");
+  } else {
+    Serial.println("{\"status\":\"imu_not_found\"}");
+  }
 }
 
 void loop() {
-  // Check if new data is available
+  // Poll IMU for new orientation data (non-blocking)
+  if (imuAvailable && imu.wasReset()) {
+    // Re-enable rotation vector if IMU was reset
+    imu.enableRotationVector(50);
+  }
+
+  if (imuAvailable && imu.getSensorEvent()) {
+    if (imu.getSensorEventID() == SENSOR_REPORTID_ROTATION_VECTOR) {
+      quatW = imu.getQuatReal();
+      quatX = imu.getQuatI();
+      quatY = imu.getQuatJ();
+      quatZ = imu.getQuatK();
+    }
+  }
+
+  // Check if new ToF data is available
   if (sensor.isDataReady()) {
     if (sensor.getRangingData(&measurementData)) {
-      // Output JSON with distance data
+      // Output JSON with distance and quaternion data
       Serial.print("{\"distances\":[");
 
       for (int i = 0; i < 64; i++) {
@@ -87,6 +126,12 @@ void loop() {
         if (i < 63) Serial.print(",");
       }
 
+      // Add quaternion (wxyz format)
+      Serial.print("],\"quat\":[");
+      Serial.print(quatW, 4); Serial.print(",");
+      Serial.print(quatX, 4); Serial.print(",");
+      Serial.print(quatY, 4); Serial.print(",");
+      Serial.print(quatZ, 4);
       Serial.println("]}");
     }
   }
