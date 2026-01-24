@@ -82,9 +82,10 @@ void setup() {
   }
 
   if (imuAvailable) {
-    // Enable rotation vector report at 50ms interval (20Hz)
-    imu.enableRotationVector(50);
-    Serial.println("{\"status\":\"imu_ready\"}");
+    // Enable game rotation vector at 10ms interval (100Hz)
+    // Game rotation uses accel+gyro only (no magnetometer) - immune to magnetic interference
+    imu.enableGameRotationVector(10);
+    Serial.println("{\"status\":\"imu_ready\",\"mode\":\"game_rotation_vector\",\"frequency_hz\":100}");
   } else {
     Serial.println("{\"status\":\"imu_not_found\"}");
   }
@@ -93,12 +94,12 @@ void setup() {
 void loop() {
   // Poll IMU for new orientation data (non-blocking)
   if (imuAvailable && imu.wasReset()) {
-    // Re-enable rotation vector if IMU was reset
-    imu.enableRotationVector(50);
+    // Re-enable game rotation vector if IMU was reset
+    imu.enableGameRotationVector(10);
   }
 
   if (imuAvailable && imu.getSensorEvent()) {
-    if (imu.getSensorEventID() == SENSOR_REPORTID_ROTATION_VECTOR) {
+    if (imu.getSensorEventID() == SENSOR_REPORTID_GAME_ROTATION_VECTOR) {
       quatW = imu.getQuatReal();
       quatX = imu.getQuatI();
       quatY = imu.getQuatJ();
