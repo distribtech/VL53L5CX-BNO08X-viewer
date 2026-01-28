@@ -54,8 +54,8 @@ class VL53L5CXViewer:
         tof_board_mesh = create_board_mesh(server, assets_dir)
         imu_board_mesh = create_imu_board_mesh(server, assets_dir)
 
-        # ToF is ~1 inch (25.4mm) in -Y direction from IMU on breadboard
-        IMU_TO_TOF_OFFSET = np.array([0.0, -0.0254, 0.0])  # meters
+        # Physical offset between IMU and ToF sensor
+        imu_to_tof_offset = np.array(config.imu_to_tof_offset)
 
         zone_rays, rays_frame = create_zone_rays(server, self.zone_angles)
 
@@ -224,7 +224,7 @@ class VL53L5CXViewer:
                     if imu_rotation_checkbox.value and imu_active:
                         # Rotate the offset vector to get ToF position in world frame
                         tof_position = rotate_points_by_quaternion(
-                            IMU_TO_TOF_OFFSET.reshape(1, 3), corrected_quat
+                            imu_to_tof_offset.reshape(1, 3), corrected_quat
                         )[0]
 
                         # Points are in ToF's local frame, transform to world:
@@ -245,9 +245,9 @@ class VL53L5CXViewer:
                         imu_board_mesh.wxyz = (1.0, 0.0, 0.0, 0.0)
                         imu_board_mesh.position = (0.0, 0.0, 0.0)
                         tof_board_mesh.wxyz = (1.0, 0.0, 0.0, 0.0)
-                        tof_board_mesh.position = tuple(IMU_TO_TOF_OFFSET)
+                        tof_board_mesh.position = tuple(imu_to_tof_offset)
                         rays_frame.wxyz = (1.0, 0.0, 0.0, 0.0)
-                        rays_frame.position = tuple(IMU_TO_TOF_OFFSET)
+                        rays_frame.position = tuple(imu_to_tof_offset)
                     colors = get_colors(distances, status)
 
                     # Filter out invalid points (status 5 = valid measurement)
@@ -263,9 +263,8 @@ class VL53L5CXViewer:
                             accumulated_colors.append(valid_colors)
 
                             # Only run expensive downsampling when buffer gets large
-                            # (every ~10 frames worth of new points)
                             total_new_points = sum(len(p) for p in accumulated_points)
-                            if total_new_points > 500 or len(accumulated_points) > 15:
+                            if total_new_points > config.DOWNSAMPLE_POINT_THRESHOLD or len(accumulated_points) > config.DOWNSAMPLE_BUFFER_THRESHOLD:
                                 # Combine all accumulated points
                                 all_points = np.vstack(accumulated_points)
                                 all_colors = np.vstack(accumulated_colors)
@@ -359,10 +358,10 @@ class VL53L5CXViewer:
                 for ray in zone_rays:
                     ray.visible = show_rays_checkbox.value
 
-                # Target ~30 FPS for smooth visualization
+                # Target frame rate for smooth visualization
                 elapsed = time.time() - frame_start
-                if elapsed < 0.033:
-                    time.sleep(0.033 - elapsed)
+                if elapsed < config.FRAME_TIME:
+                    time.sleep(config.FRAME_TIME - elapsed)
 
         except KeyboardInterrupt:
             logger.info("Shutting down...")
