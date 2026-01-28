@@ -2,6 +2,7 @@
 
 import json
 import logging
+import math
 import threading
 import time
 
@@ -81,8 +82,7 @@ class SerialReader:
         for d in distances:
             if not isinstance(d, (int, float)):
                 return False
-            # Check for NaN or Inf
-            if d != d or d == float('inf') or d == float('-inf'):
+            if math.isnan(d) or math.isinf(d):
                 return False
         return True
 
@@ -93,8 +93,7 @@ class SerialReader:
         for q in quat:
             if not isinstance(q, (int, float)):
                 return False
-            # Check for NaN or Inf
-            if q != q or q == float('inf') or q == float('-inf'):
+            if math.isnan(q) or math.isinf(q):
                 return False
         return True
 
