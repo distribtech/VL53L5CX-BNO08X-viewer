@@ -47,10 +47,6 @@ class MappingState:
             return True
         return False
 
-    def clear(self):
-        self.accumulated_points.clear()
-        self.accumulated_colors.clear()
-
     def add(self, points: np.ndarray, colors: np.ndarray):
         self.accumulated_points.append(points)
         self.accumulated_colors.append(colors)
@@ -192,7 +188,11 @@ class VL53L5CXViewer:
 
             @self.mapping_checkbox.on_update
             def _on_mapping_toggle(event: viser.GuiEvent) -> None:
-                if not self.mapping_checkbox.value:
+                if self.mapping_checkbox.value:
+                    # Entering mapping mode: remove live points
+                    server.scene.remove_by_name("/breadboard/tof/sensor/points")
+                else:
+                    # Exiting mapping mode: clear accumulated map
                     mapping_state.request_clear()
 
     def _update_scene_transforms(
@@ -248,6 +248,11 @@ class VL53L5CXViewer:
 
         corrected_quat = correct_imu_to_tof_frame(quaternion) if imu_connected else quaternion
 
+        # Handle clear request atomically in main loop (must be outside sensor data check)
+        if mapping_state.process_clear_if_requested():
+            self.point_count_text.value = "0"
+            server.scene.remove_by_name("/map/points")
+
         if np.any(distances > 0):
             # Points in sensor-local coordinates (z forward from sensor)
             points_local = distances_to_points(distances, self.zone_angles)
@@ -258,11 +263,6 @@ class VL53L5CXViewer:
             transform_result = self._update_scene_transforms(
                 corrected_quat, imu_connected, self.imu_rotation_checkbox.value
             )
-
-            # Handle clear request atomically in main loop (before any mapping logic)
-            if mapping_state.process_clear_if_requested():
-                self.point_count_text.value = "0"
-                server.scene.remove_by_name("/map/points")
 
             if np.any(valid_mask):
                 valid_local = points_local[valid_mask].astype(np.float32)
