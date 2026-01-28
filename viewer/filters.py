@@ -40,7 +40,7 @@ class TemporalFilter:
             # Initialize filter buffer with first valid frame
             self.filtered_distances = distances.copy()
             self.initialized = True
-            return distances
+            return self.filtered_distances.copy()
 
         # EMA formula: filtered = alpha * new + (1 - alpha) * old
         self.filtered_distances = alpha * distances + (1.0 - alpha) * self.filtered_distances
