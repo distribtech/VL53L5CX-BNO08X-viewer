@@ -27,6 +27,7 @@ class SerialReader:
         self.distances = np.zeros(config.NUM_ZONES, dtype=np.float32)
         self.status = np.zeros(config.NUM_ZONES, dtype=np.uint8)
         self.quaternion = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)  # wxyz identity
+        self._imu_connected = False  # True if IMU data has been received
         self._data_lock = threading.Lock()
 
         # FPS tracking
@@ -42,6 +43,12 @@ class SerialReader:
         """Current data frame rate from sensor."""
         with self._data_lock:
             return self._data_fps
+
+    @property
+    def imu_connected(self) -> bool:
+        """True if IMU data has been received (quat field present in serial data)."""
+        with self._data_lock:
+            return self._imu_connected
 
     def connect(self):
         """Open serial connection."""
@@ -171,6 +178,7 @@ class SerialReader:
                                             self.quaternion = np.array(
                                                 data["quat"], dtype=np.float32
                                             )
+                                            self._imu_connected = True
                                         else:
                                             logger.debug("No quaternion data in packet (IMU may not be connected or firmware outdated)")
                                     # Track data FPS

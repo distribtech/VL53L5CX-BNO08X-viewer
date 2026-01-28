@@ -9,34 +9,49 @@ import trimesh
 import viser
 
 from . import config
+from .config import BoardConfig
 from .geometry import ZoneAngles
 
 
-@dataclass
-class SensorFrames:
-    """Handles to the sensor frame hierarchy."""
+def _yaw_to_wxyz(yaw_deg: float) -> tuple[float, float, float, float]:
+    """Convert a yaw angle (rotation around Z) to wxyz quaternion."""
+    yaw_rad = np.deg2rad(yaw_deg)
+    w = np.cos(yaw_rad / 2)
+    z = np.sin(yaw_rad / 2)
+    return (float(w), 0.0, 0.0, float(z))
 
-    imu_frame: viser.FrameHandle
-    imu_board: viser.MeshHandle
-    tof_frame: viser.FrameHandle
-    tof_board: viser.MeshHandle
-    rays_frame: viser.FrameHandle
+
+@dataclass
+class SceneHandles:
+    """Handles to the scene hierarchy.
+
+    Hierarchy:
+        /breadboard                     # Breadboard frame (world origin)
+            /breadboard/imu             # IMU board frame
+                /breadboard/imu/mesh    # Board mesh
+                /breadboard/imu/sensor  # Sensor origin frame
+            /breadboard/tof             # ToF board frame
+                /breadboard/tof/mesh    # Board mesh
+                /breadboard/tof/sensor  # Sensor origin frame (with yaw)
+                    /breadboard/tof/sensor/rays/ray_N  # Zone rays
+                    /breadboard/tof/sensor/points      # Point cloud
+                    /breadboard/tof/sensor/plane       # Fitted plane
+    """
+
+    breadboard: viser.FrameHandle
+    imu_board: viser.FrameHandle
+    imu_mesh: viser.MeshHandle
+    imu_sensor: viser.FrameHandle
+    tof_board: viser.FrameHandle
+    tof_mesh: viser.MeshHandle
+    tof_sensor: viser.FrameHandle
     zone_rays: list
 
 
 def create_grid(server: viser.ViserServer, size: float = 2.0) -> list:
-    """Create a reference grid on the XY plane.
-
-    Args:
-        server: Viser server instance
-        size: Half-size of the grid in meters
-
-    Returns:
-        List of spline handles
-    """
+    """Create a reference grid on the XY plane."""
     grid_handles = []
     for i in range(-10, 11):
-        # Lines parallel to X
         start_x = [-size, i * 0.2, 0]
         end_x = [size, i * 0.2, 0]
         handle_x = server.scene.add_spline_catmull_rom(
@@ -47,7 +62,6 @@ def create_grid(server: viser.ViserServer, size: float = 2.0) -> list:
         )
         grid_handles.append(handle_x)
 
-        # Lines parallel to Y
         start_y = [i * 0.2, -size, 0]
         end_y = [i * 0.2, size, 0]
         handle_y = server.scene.add_spline_catmull_rom(
@@ -64,44 +78,26 @@ def create_grid(server: viser.ViserServer, size: float = 2.0) -> list:
 def _create_board_mesh(
     server: viser.ViserServer,
     scene_path: str,
-    dimensions: tuple[float, float, float],
-    position: tuple[float, float, float],
-    texture_path: Path | None,
-    fallback_color: tuple[int, int, int, int],
-    is_atlas: bool = False,
+    board_config: BoardConfig,
+    assets_dir: Path,
 ):
-    """Create a board mesh at a specified position.
-
-    Args:
-        server: Viser server instance
-        scene_path: Path in the scene hierarchy
-        dimensions: (width, length, height) in meters
-        position: (x, y, z) position relative to parent frame
-        texture_path: Path to texture image, or None
-        fallback_color: RGBA color if texture not found
-        is_atlas: If True, texture is a vertical atlas with top texture in upper
-            half (UV y: 0.5-1.0) and bottom texture in lower half (UV y: 0.0-0.5)
-
-    Returns:
-        Mesh handle
-    """
-    width, length, height = dimensions
+    """Create a board mesh at the origin of its parent frame."""
+    width, length, height = board_config.dimensions
     board_mesh = trimesh.creation.box(extents=[width, length, height])
 
-    if texture_path and texture_path.exists():
+    texture_path = assets_dir / board_config.texture
+    if texture_path.exists():
         texture_image = Image.open(texture_path)
         uv = np.zeros((len(board_mesh.vertices), 2))
         for i, v in enumerate(board_mesh.vertices):
-            # Base UV from vertex position (normalized to 0-1)
             u = (v[0] + width / 2) / width
             v_coord = (v[1] + length / 2) / length
 
-            # For atlas textures, scale v_coord based on vertex z position
-            if is_atlas:
-                if v[2] > 0:  # Top face vertices
-                    v_coord = 0.5 + v_coord * 0.5  # Map to upper half (0.5-1.0)
-                else:  # Bottom face vertices
-                    v_coord = v_coord * 0.5  # Map to lower half (0.0-0.5)
+            if board_config.is_atlas:
+                if v[2] > 0:
+                    v_coord = 0.5 + v_coord * 0.5
+                else:
+                    v_coord = v_coord * 0.5
 
             uv[i, 0] = u
             uv[i, 1] = v_coord
@@ -113,67 +109,87 @@ def _create_board_mesh(
         )
         board_mesh.visual = trimesh.visual.TextureVisuals(uv=uv, material=material)
     else:
-        board_mesh.visual.face_colors = fallback_color
+        board_mesh.visual.face_colors = board_config.fallback_color
 
-    return server.scene.add_mesh_trimesh(scene_path, mesh=board_mesh, position=position)
+    return server.scene.add_mesh_trimesh(scene_path, mesh=board_mesh)
 
 
-def create_sensor_frames(
+def create_scene_hierarchy(
     server: viser.ViserServer,
     assets_dir: Path,
     zone_angles: ZoneAngles,
-) -> SensorFrames:
-    """Create the complete sensor frame hierarchy.
+) -> SceneHandles:
+    """Create the complete scene hierarchy.
 
-    Hierarchy:
-        /imu (frame at IMU sensor origin)
-            /imu/board (mesh offset so chip aligns with frame)
-        /tof (frame at ToF sensor origin)
-            /tof/board (mesh offset so aperture aligns with frame)
-            /tof/rays (frame for zone rays)
-                /tof/rays/ray_N
-
-    Args:
-        server: Viser server instance
-        assets_dir: Path to assets directory
-        zone_angles: Pre-computed zone angle data
-
-    Returns:
-        SensorFrames dataclass with all handles
+    The hierarchy flows: breadboard -> board -> sensor
+    Points and rays are children of the sensor frame, so they automatically
+    inherit the sensor's world transform.
     """
-    # IMU frame and board
-    imu_frame = server.scene.add_frame("/imu", show_axes=False)
-    imu_board = _create_board_mesh(
+    # Breadboard frame at world origin
+    breadboard = server.scene.add_frame("/breadboard", show_axes=False)
+
+    # IMU board frame (positioned at board center in world)
+    # Board center = world_position - sensor_offset (sensor is at world_position)
+    imu_board_pos = tuple(
+        np.array(config.IMU_BOARD.world_position) - np.array(config.IMU_BOARD.sensor_offset)
+    )
+    imu_board = server.scene.add_frame(
+        "/breadboard/imu",
+        show_axes=False,
+        position=imu_board_pos,
+    )
+    imu_mesh = _create_board_mesh(
         server,
-        scene_path="/imu/board",
-        dimensions=config.IMU_BOARD_DIMENSIONS,
-        position=config.IMU_BOARD_OFFSET,
-        texture_path=assets_dir / "bno08x-top.jpg",
-        fallback_color=(128, 0, 128, 255),  # Purple
+        scene_path="/breadboard/imu/mesh",
+        board_config=config.IMU_BOARD,
+        assets_dir=assets_dir,
+    )
+    # IMU sensor frame (at sensor_offset from board center)
+    imu_sensor = server.scene.add_frame(
+        "/breadboard/imu/sensor",
+        show_axes=True,
+        axes_length=0.01,
+        axes_radius=0.001,
+        position=config.IMU_BOARD.sensor_offset,
+        wxyz=_yaw_to_wxyz(config.IMU_BOARD.sensor_yaw_deg),
     )
 
-    # ToF frame and board
-    tof_frame = server.scene.add_frame("/tof", show_axes=False)
-    tof_board = _create_board_mesh(
+    # ToF board frame (positioned at board center in world)
+    tof_board_pos = tuple(
+        np.array(config.TOF_BOARD.world_position) - np.array(config.TOF_BOARD.sensor_offset)
+    )
+    tof_board = server.scene.add_frame(
+        "/breadboard/tof",
+        show_axes=False,
+        position=tof_board_pos,
+    )
+    tof_mesh = _create_board_mesh(
         server,
-        scene_path="/tof/board",
-        dimensions=config.TOF_BOARD_DIMENSIONS,
-        position=config.TOF_BOARD_OFFSET,
-        texture_path=assets_dir / "vl53l5cx-aliexpress-atlas.png",
-        fallback_color=(0, 100, 0, 255),  # Green
-        is_atlas=True,
+        scene_path="/breadboard/tof/mesh",
+        board_config=config.TOF_BOARD,
+        assets_dir=assets_dir,
+    )
+    # ToF sensor frame (at sensor_offset from board center, with yaw correction)
+    tof_sensor = server.scene.add_frame(
+        "/breadboard/tof/sensor",
+        show_axes=True,
+        axes_length=0.01,
+        axes_radius=0.001,
+        position=config.TOF_BOARD.sensor_offset,
+        wxyz=_yaw_to_wxyz(config.TOF_BOARD.sensor_yaw_deg),
     )
 
-    # Zone rays (children of /tof frame)
-    rays_frame = server.scene.add_frame("/tof/rays", show_axes=False)
+    # Zone rays as children of ToF sensor (in sensor-local coordinates)
     zone_rays = _create_zone_rays(server, zone_angles)
 
-    return SensorFrames(
-        imu_frame=imu_frame,
+    return SceneHandles(
+        breadboard=breadboard,
         imu_board=imu_board,
-        tof_frame=tof_frame,
+        imu_mesh=imu_mesh,
+        imu_sensor=imu_sensor,
         tof_board=tof_board,
-        rays_frame=rays_frame,
+        tof_mesh=tof_mesh,
+        tof_sensor=tof_sensor,
         zone_rays=zone_rays,
     )
 
@@ -182,21 +198,12 @@ def _create_zone_rays(
     server: viser.ViserServer,
     zone_angles: ZoneAngles,
 ) -> list:
-    """Create zone ray visualization (64 rays showing discrete sampling directions).
-
-    Args:
-        server: Viser server instance
-        zone_angles: Pre-computed zone angle data
-
-    Returns:
-        List of ray handles
-    """
-    min_z = config.MIN_RANGE_MM / 1000  # 20mm in metres
-    max_z = config.MAX_RANGE_MM / 1000  # 4000mm in metres
+    """Create zone ray visualization in sensor-local coordinates."""
+    min_z = config.MIN_RANGE_MM / 1000
+    max_z = config.MAX_RANGE_MM / 1000
 
     zone_rays = []
     for i in range(config.NUM_ZONES):
-        # Rays from min to max z-distance (flat planes, not curved surfaces)
         start = [
             min_z * zone_angles.tan_x[i],
             min_z * zone_angles.tan_y[i],
@@ -208,7 +215,7 @@ def _create_zone_rays(
             max_z,
         ]
         ray = server.scene.add_spline_catmull_rom(
-            f"/tof/rays/ray_{i}",
+            f"/breadboard/tof/sensor/rays/ray_{i}",
             positions=np.array([start, end], dtype=np.float32),
             color=(100, 150, 255),
             line_width=1.0,
