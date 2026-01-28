@@ -32,6 +32,20 @@ class MappingState:
 
     accumulated_points: list[np.ndarray] = field(default_factory=list)
     accumulated_colors: list[np.ndarray] = field(default_factory=list)
+    _clear_requested: bool = False
+
+    def request_clear(self):
+        """Request a clear - will be processed in the main loop."""
+        self._clear_requested = True
+
+    def process_clear_if_requested(self) -> bool:
+        """Process pending clear request. Returns True if cleared."""
+        if self._clear_requested:
+            self._clear_requested = False
+            self.accumulated_points.clear()
+            self.accumulated_colors.clear()
+            return True
+        return False
 
     def clear(self):
         self.accumulated_points.clear()
@@ -174,14 +188,12 @@ class VL53L5CXViewer:
 
             @clear_button.on_click
             def _on_clear_click(event: viser.GuiEvent) -> None:
-                mapping_state.clear()
-                self.point_count_text.value = "0"
+                mapping_state.request_clear()
 
             @self.mapping_checkbox.on_update
             def _on_mapping_toggle(event: viser.GuiEvent) -> None:
                 if not self.mapping_checkbox.value:
-                    mapping_state.clear()
-                    self.point_count_text.value = "0"
+                    mapping_state.request_clear()
 
     def _update_scene_transforms(
         self, corrected_quat: np.ndarray, imu_connected: bool, apply_rotation: bool
@@ -246,6 +258,11 @@ class VL53L5CXViewer:
             transform_result = self._update_scene_transforms(
                 corrected_quat, imu_connected, self.imu_rotation_checkbox.value
             )
+
+            # Handle clear request atomically in main loop (before any mapping logic)
+            if mapping_state.process_clear_if_requested():
+                self.point_count_text.value = "0"
+                server.scene.remove_by_name("/map/points")
 
             if np.any(valid_mask):
                 valid_local = points_local[valid_mask].astype(np.float32)
