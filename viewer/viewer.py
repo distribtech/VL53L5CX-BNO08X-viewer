@@ -39,6 +39,8 @@ class MappingState:
 
     def get_display_data(self) -> tuple[np.ndarray, np.ndarray]:
         """Get current accumulated points for display."""
+        if not self.accumulated_points:
+            return np.empty((0, 3), dtype=np.float32), np.empty((0, 3), dtype=np.uint8)
         if len(self.accumulated_points) == 1:
             return self.accumulated_points[0], self.accumulated_colors[0]
         return np.vstack(self.accumulated_points), np.vstack(self.accumulated_colors)
