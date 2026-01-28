@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 
 import numpy as np
+from scipy.spatial.transform import Rotation
 
 from . import config
 
@@ -146,8 +147,6 @@ def correct_imu_to_tof_frame(quaternion: np.ndarray) -> np.ndarray:
     Returns:
         Corrected quaternion in wxyz format
     """
-    from scipy.spatial.transform import Rotation
-
     # Convert IMU quaternion from wxyz to xyzw for scipy
     imu_xyzw = np.array([quaternion[1], quaternion[2], quaternion[3], quaternion[0]])
     imu_rot = Rotation.from_quat(imu_xyzw)
@@ -173,8 +172,6 @@ def rotate_points_by_quaternion(points: np.ndarray, quaternion: np.ndarray) -> n
     Returns:
         Rotated Nx3 array of 3D points
     """
-    from scipy.spatial.transform import Rotation
-
     # scipy uses xyzw format, convert from wxyz
     quat_xyzw = np.array([quaternion[1], quaternion[2], quaternion[3], quaternion[0]])
     rotation = Rotation.from_quat(quat_xyzw)
