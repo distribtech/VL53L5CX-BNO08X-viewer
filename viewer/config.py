@@ -18,6 +18,15 @@ MIN_RANGE_MM = 20
 # ToF is ~1 inch (25.4mm) in -Y direction from IMU on breadboard
 IMU_TO_TOF_OFFSET = (0.0, -0.0254, 0.0)
 
+# Board dimensions and sensor positions (meters)
+# ToF board: 10mm x 16mm x 1mm, sensor aperture ~4mm from top edge
+TOF_BOARD_DIMENSIONS = (0.010, 0.016, 0.001)
+TOF_BOARD_OFFSET = (0.0, -0.004, -0.0005)  # Board center relative to sensor aperture
+
+# IMU board: 15mm x 26mm x 1mm, BNO08x chip ~4mm above board center
+IMU_BOARD_DIMENSIONS = (0.015, 0.026, 0.001)
+IMU_BOARD_OFFSET = (0.0, -0.004, -0.0005)  # Board center relative to IMU chip
+
 # Visualization settings
 TARGET_FPS = 30  # Target visualization frame rate
 FRAME_TIME = 1.0 / TARGET_FPS  # Time per frame in seconds

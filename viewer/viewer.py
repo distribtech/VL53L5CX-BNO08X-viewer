@@ -14,7 +14,7 @@ from . import config
 from .filters import TemporalFilter, fit_plane, fit_plane_ransac
 from .geometry import compute_zone_angles, correct_imu_to_tof_frame, distances_to_points, get_colors, rotate_points_by_quaternion
 from .logging_config import setup_logging
-from .scene import create_board_mesh, create_grid, create_imu_board_mesh, create_zone_rays
+from .scene import create_grid, create_sensor_frames, SensorFrames
 from .serial_reader import SerialReader
 
 logger = logging.getLogger("vl53l5cx_viewer.main")
@@ -94,9 +94,7 @@ class VL53L5CXViewer:
         create_grid(server)
 
         assets_dir = Path(__file__).parent.parent / "assets"
-        self.tof_board_mesh = create_board_mesh(server, assets_dir)
-        self.imu_board_mesh = create_imu_board_mesh(server, assets_dir)
-        self.zone_rays, self.rays_frame = create_zone_rays(server, self.zone_angles)
+        self.frames = create_sensor_frames(server, assets_dir, self.zone_angles)
 
     def _setup_gui(self, server: viser.ViserServer, mapping_state: MappingState):
         """Initialize GUI controls and return handles."""
@@ -172,25 +170,29 @@ class VL53L5CXViewer:
                     self.point_count_text.value = "0"
 
     def _update_scene_transforms(self, corrected_quat: np.ndarray, imu_active: bool, apply_rotation: bool):
-        """Update board and ray positions based on IMU orientation."""
+        """Update sensor frame positions based on IMU orientation.
+
+        The scene hierarchy handles child transforms automatically:
+        - /imu frame transforms -> /imu/board follows
+        - /tof frame transforms -> /tof/board and /tof/rays follow
+        """
         if apply_rotation and imu_active:
             tof_position = rotate_points_by_quaternion(
                 self.imu_to_tof_offset.reshape(1, 3), corrected_quat
             )[0]
-            self.imu_board_mesh.wxyz = corrected_quat
-            self.imu_board_mesh.position = (0.0, 0.0, 0.0)
-            self.tof_board_mesh.wxyz = corrected_quat
-            self.tof_board_mesh.position = tuple(tof_position)
-            self.rays_frame.wxyz = corrected_quat
-            self.rays_frame.position = tuple(tof_position)
+            # Transform IMU frame (board follows as child)
+            self.frames.imu_frame.wxyz = corrected_quat
+            self.frames.imu_frame.position = (0.0, 0.0, 0.0)
+            # Transform ToF frame (board and rays follow as children)
+            self.frames.tof_frame.wxyz = corrected_quat
+            self.frames.tof_frame.position = tuple(tof_position)
             return tof_position
         else:
-            self.imu_board_mesh.wxyz = (1.0, 0.0, 0.0, 0.0)
-            self.imu_board_mesh.position = (0.0, 0.0, 0.0)
-            self.tof_board_mesh.wxyz = (1.0, 0.0, 0.0, 0.0)
-            self.tof_board_mesh.position = tuple(self.imu_to_tof_offset)
-            self.rays_frame.wxyz = (1.0, 0.0, 0.0, 0.0)
-            self.rays_frame.position = tuple(self.imu_to_tof_offset)
+            # Identity rotation, ToF offset from IMU
+            self.frames.imu_frame.wxyz = (1.0, 0.0, 0.0, 0.0)
+            self.frames.imu_frame.position = (0.0, 0.0, 0.0)
+            self.frames.tof_frame.wxyz = (1.0, 0.0, 0.0, 0.0)
+            self.frames.tof_frame.position = tuple(self.imu_to_tof_offset)
             return None
 
     def _process_frame(self, server: viser.ViserServer, mapping_state: MappingState, plane_handle):
@@ -216,6 +218,9 @@ class VL53L5CXViewer:
             )
             if tof_position is not None:
                 points = rotate_points_by_quaternion(points, corrected_quat) + tof_position
+            else:
+                # When IMU inactive, still offset points to match ray positions
+                points = points + self.imu_to_tof_offset
 
             colors = get_colors(distances, status)
             valid_mask = (status == 5) & (distances >= config.MIN_RANGE_MM)
@@ -273,7 +278,7 @@ class VL53L5CXViewer:
 
         # Update frequency and ray visibility
         self.freq_text.value = f"{self.serial_reader.data_fps:.1f}"
-        for ray in self.zone_rays:
+        for ray in self.frames.zone_rays:
             ray.visible = self.show_rays_checkbox.value
 
         return plane_handle
