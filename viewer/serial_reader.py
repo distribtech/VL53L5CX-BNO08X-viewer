@@ -76,6 +76,28 @@ class SerialReader:
         with self._data_lock:
             return self.distances.copy(), self.status.copy(), self.quaternion.copy()
 
+    def _validate_distances(self, distances: list) -> bool:
+        """Validate distance values are within expected range."""
+        for d in distances:
+            if not isinstance(d, (int, float)):
+                return False
+            # Check for NaN or Inf
+            if d != d or d == float('inf') or d == float('-inf'):
+                return False
+        return True
+
+    def _validate_quaternion(self, quat: list) -> bool:
+        """Validate quaternion values."""
+        if len(quat) != 4:
+            return False
+        for q in quat:
+            if not isinstance(q, (int, float)):
+                return False
+            # Check for NaN or Inf
+            if q != q or q == float('inf') or q == float('-inf'):
+                return False
+        return True
+
     def _reconnect(self) -> bool:
         """Attempt to reconnect to serial port.
 
@@ -114,7 +136,19 @@ class SerialReader:
                                     status = data["status"]
                                     # Validate array lengths to handle corrupted serial data
                                     if len(distances) != config.NUM_ZONES or len(status) != config.NUM_ZONES:
+                                        logger.warning(
+                                            "Invalid array lengths: distances=%d, status=%d (expected %d)",
+                                            len(distances), len(status), config.NUM_ZONES
+                                        )
                                         continue
+                                    # Validate distance values
+                                    if not self._validate_distances(distances):
+                                        logger.warning("Invalid distance values detected (NaN/Inf)")
+                                        continue
+                                    # Validate quaternion if present
+                                    if "quat" in data and not self._validate_quaternion(data["quat"]):
+                                        logger.warning("Invalid quaternion values detected (NaN/Inf)")
+                                        data.pop("quat")  # Still process distances, skip bad quaternion
                                     with self._data_lock:
                                         self.distances = np.array(distances, dtype=np.float32)
                                         self.status = np.array(status, dtype=np.uint8)
