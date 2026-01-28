@@ -108,8 +108,6 @@ def get_colors(distances: np.ndarray, status: np.ndarray) -> np.ndarray:
     Returns:
         Nx3 array of RGB colors (uint8)
     """
-    colors = np.zeros((len(distances), 3), dtype=np.uint8)
-
     # Normalize distances for color mapping
     d_norm = np.clip(
         (distances - config.MIN_RANGE_MM) / (config.MAX_RANGE_MM - config.MIN_RANGE_MM),
@@ -118,19 +116,19 @@ def get_colors(distances: np.ndarray, status: np.ndarray) -> np.ndarray:
     )
 
     # Status 5 = valid measurement
-    valid = status == 5
+    valid = (status == 5) & (distances >= config.MIN_RANGE_MM)
 
-    # Color gradient: blue (0,0,255) -> cyan -> green -> yellow -> red (255,0,0)
-    for i in range(len(distances)):
-        if valid[i] and distances[i] >= config.MIN_RANGE_MM:
-            t = d_norm[i]
-            # Blue to Red gradient
-            colors[i, 0] = int(t * 255)  # R increases with distance
-            colors[i, 1] = int((1 - abs(2 * t - 1)) * 200)  # G peaks in middle
-            colors[i, 2] = int((1 - t) * 255)  # B decreases with distance
-        else:
-            # Invalid: gray
-            colors[i] = [128, 128, 128]
+    # Vectorized color calculation for all points
+    # Blue to Red gradient: R increases, G peaks in middle, B decreases
+    r = (d_norm * 255).astype(np.uint8)
+    g = ((1 - np.abs(2 * d_norm - 1)) * 200).astype(np.uint8)
+    b = ((1 - d_norm) * 255).astype(np.uint8)
+
+    # Stack into Nx3 array
+    colors = np.column_stack([r, g, b])
+
+    # Set invalid points to gray
+    colors[~valid] = [128, 128, 128]
 
     return colors
 
