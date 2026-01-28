@@ -1,10 +1,14 @@
 """Data filtering and plane fitting for VL53L5CX."""
 
+import logging
+
 import numpy as np
 from scipy.spatial.transform import Rotation
 
 from . import config
 from .geometry import rotation_matrix_from_vectors
+
+logger = logging.getLogger("vl53l5cx_viewer.filters")
 
 
 class TemporalFilter:
@@ -69,7 +73,8 @@ def _fit_plane_from_points(
     try:
         coeffs, _, _, _ = np.linalg.lstsq(A, z, rcond=None)
         a, b, c = coeffs
-    except np.linalg.LinAlgError:
+    except np.linalg.LinAlgError as e:
+        logger.debug("Plane fitting failed: %s", e)
         return None
 
     # Plane equation: z = ax + by + c

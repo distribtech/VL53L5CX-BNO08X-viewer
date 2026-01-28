@@ -2,6 +2,7 @@
 """VL53L5CX Point Cloud Viewer - Main application."""
 
 import argparse
+import logging
 from pathlib import Path
 import time
 
@@ -11,8 +12,11 @@ import viser
 from . import config
 from .filters import TemporalFilter, fit_plane, fit_plane_ransac
 from .geometry import compute_zone_angles, correct_imu_to_tof_frame, distances_to_points, get_colors, rotate_points_by_quaternion
+from .logging_config import setup_logging
 from .scene import create_board_mesh, create_grid, create_imu_board_mesh, create_zone_rays
 from .serial_reader import SerialReader
+
+logger = logging.getLogger("vl53l5cx_viewer.main")
 
 
 class VL53L5CXViewer:
@@ -31,7 +35,7 @@ class VL53L5CXViewer:
 
         # Start Viser server
         server = viser.ViserServer(host=host, port=port)
-        print(f"Viser server started at http://localhost:{port}")
+        logger.info("Viser server started at http://localhost:%d", port)
 
         # Set initial camera pose for new clients
         @server.on_client_connect
@@ -361,12 +365,13 @@ class VL53L5CXViewer:
                     time.sleep(0.033 - elapsed)
 
         except KeyboardInterrupt:
-            print("\nShutting down...")
+            logger.info("Shutting down...")
         finally:
             self.serial_reader.stop()
 
 
 def main():
+    setup_logging()
     parser = argparse.ArgumentParser(description="VL53L5CX Point Cloud Viewer")
     parser.add_argument(
         "--port",

@@ -1,6 +1,7 @@
 """Serial communication with VL53L5CX sensor via ESP32."""
 
 import json
+import logging
 import threading
 import time
 
@@ -8,6 +9,8 @@ import numpy as np
 import serial
 
 from . import config
+
+logger = logging.getLogger("vl53l5cx_viewer.serial")
 
 
 class SerialReader:
@@ -39,11 +42,11 @@ class SerialReader:
 
     def connect(self):
         """Open serial connection."""
-        print(f"Connecting to {self.port} at {self.baud} baud...")
+        logger.info("Connecting to %s at %d baud...", self.port, self.baud)
         self.serial = serial.Serial(self.port, self.baud, timeout=1)
         time.sleep(2)  # Wait for ESP32 to initialize
         self.serial.reset_input_buffer()
-        print("Serial connected.")
+        logger.info("Serial connected")
 
     def start(self):
         """Start the reader thread."""
@@ -87,14 +90,15 @@ class SerialReader:
             self.serial = serial.Serial(self.port, self.baud, timeout=1)
             time.sleep(0.5)  # Brief wait for device to initialize
             self.serial.reset_input_buffer()
-            print("Serial reconnected.")
+            logger.info("Serial reconnected")
             return True
-        except (serial.SerialException, OSError):
+        except (serial.SerialException, OSError) as e:
+            logger.debug("Reconnection failed: %s", e)
             return False
 
     def _read_loop(self):
         """Background thread to read serial data."""
-        print("Serial reader thread started")
+        logger.info("Serial reader thread started")
         while self.running:
             try:
                 if self.serial and self.serial.is_open:
@@ -125,12 +129,12 @@ class SerialReader:
                                         self._data_fps = self._frame_count / elapsed
                                         self._frame_count = 0
                                         self._last_fps_time = now
-                            except json.JSONDecodeError:
-                                pass
-            except (serial.SerialException, OSError):
+                            except json.JSONDecodeError as e:
+                                logger.debug("JSON decode error: %s", e)
+            except (serial.SerialException, OSError) as e:
                 if not self.running:
                     break
-                print("Serial connection lost, attempting to reconnect...")
+                logger.warning("Serial connection lost: %s", e)
                 self._data_fps = 0.0  # Reset FPS indicator
                 while self.running:
                     if self._reconnect():
