@@ -248,12 +248,12 @@ class VL53L5CXViewer:
                     )
 
                 # Plane fitting
-                if self.fit_plane_checkbox.value and np.sum(valid_mask) >= 3:
+                if self.fit_plane_checkbox.value and len(valid_points) >= 3:
                     if self.plane_method_dropdown.value == "RANSAC":
                         threshold_m = self.ransac_threshold_slider.value / 1000.0
-                        plane_fit = fit_plane_ransac(points[valid_mask], threshold=threshold_m)
+                        plane_fit = fit_plane_ransac(valid_points, threshold=threshold_m)
                     else:
-                        plane_fit = fit_plane(points[valid_mask])
+                        plane_fit = fit_plane(valid_points)
 
                     if plane_fit is not None:
                         pos, wxyz, size = plane_fit
