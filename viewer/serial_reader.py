@@ -38,7 +38,8 @@ class SerialReader:
     @property
     def data_fps(self) -> float:
         """Current data frame rate from sensor."""
-        return self._data_fps
+        with self._data_lock:
+            return self._data_fps
 
     def connect(self):
         """Open serial connection."""
@@ -126,7 +127,8 @@ class SerialReader:
                                     now = time.time()
                                     elapsed = now - self._last_fps_time
                                     if elapsed >= 1.0:
-                                        self._data_fps = self._frame_count / elapsed
+                                        with self._data_lock:
+                                            self._data_fps = self._frame_count / elapsed
                                         self._frame_count = 0
                                         self._last_fps_time = now
                             except json.JSONDecodeError as e:
@@ -135,7 +137,8 @@ class SerialReader:
                 if not self.running:
                     break
                 logger.warning("Serial connection lost: %s", e)
-                self._data_fps = 0.0  # Reset FPS indicator
+                with self._data_lock:
+                    self._data_fps = 0.0  # Reset FPS indicator
                 while self.running:
                     if self._reconnect():
                         break
