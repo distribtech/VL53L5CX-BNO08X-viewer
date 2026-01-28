@@ -127,12 +127,12 @@ void loop() {
         if (i < 63) Serial.print(",");
       }
 
-      // Add quaternion (wxyz format)
+      // Add quaternion (wxyz format) with 6 decimal places for accuracy
       Serial.print("],\"quat\":[");
-      Serial.print(quatW, 4); Serial.print(",");
-      Serial.print(quatX, 4); Serial.print(",");
-      Serial.print(quatY, 4); Serial.print(",");
-      Serial.print(quatZ, 4);
+      Serial.print(quatW, 6); Serial.print(",");
+      Serial.print(quatX, 6); Serial.print(",");
+      Serial.print(quatY, 6); Serial.print(",");
+      Serial.print(quatZ, 6);
       Serial.println("]}");
     }
   }
