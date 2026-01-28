@@ -48,6 +48,52 @@ def create_grid(server: viser.ViserServer, size: float = 2.0) -> list:
     return grid_handles
 
 
+def _create_board_mesh_generic(
+    server: viser.ViserServer,
+    scene_path: str,
+    dimensions: tuple[float, float, float],
+    texture_path: Path | None,
+    fallback_color: tuple[int, int, int, int],
+    z_offset: float = 0.0,
+):
+    """Create a board mesh with optional texture.
+
+    Args:
+        server: Viser server instance
+        scene_path: Path in the scene hierarchy
+        dimensions: (width, length, height) in meters
+        texture_path: Path to texture image, or None
+        fallback_color: RGBA color if texture not found
+        z_offset: Offset to apply to z vertices (e.g., -height/2 for top at z=0)
+
+    Returns:
+        Mesh handle
+    """
+    width, length, height = dimensions
+    board_mesh = trimesh.creation.box(extents=[width, length, height])
+
+    if z_offset != 0.0:
+        board_mesh.vertices[:, 2] += z_offset
+
+    if texture_path and texture_path.exists():
+        texture_image = Image.open(texture_path)
+        # UV coordinates based on vertex x,y positions (maps top face correctly)
+        uv = np.zeros((len(board_mesh.vertices), 2))
+        for i, v in enumerate(board_mesh.vertices):
+            uv[i, 0] = (v[0] + width / 2) / width
+            uv[i, 1] = (v[1] + length / 2) / length
+        material = trimesh.visual.material.PBRMaterial(
+            baseColorTexture=texture_image,
+            metallicFactor=0.0,
+            roughnessFactor=1.0,
+        )
+        board_mesh.visual = trimesh.visual.TextureVisuals(uv=uv, material=material)
+    else:
+        board_mesh.visual.face_colors = fallback_color
+
+    return server.scene.add_mesh_trimesh(scene_path, mesh=board_mesh)
+
+
 def create_board_mesh(server: viser.ViserServer, assets_dir: Path):
     """Create the Pololu VL53L5CX board mesh.
 
@@ -58,35 +104,16 @@ def create_board_mesh(server: viser.ViserServer, assets_dir: Path):
     Returns:
         Mesh handle
     """
-    # Board dimensions: 13mm x 18mm x 1mm (width x length x height)
-    # Measured from Pololu VL53L5CX carrier board with calipers
-    board_width = 0.013  # 13mm in metres
-    board_length = 0.018  # 18mm in metres
-    board_height = 0.001  # 1mm in metres
-
-    # Create box with top face at z=0
-    board_mesh = trimesh.creation.box(extents=[board_width, board_length, board_height])
-    board_mesh.vertices[:, 2] -= board_height / 2
-
-    # Load texture and apply to box
-    texture_path = assets_dir / "vl53l5cx-top.jpg"
-    if texture_path.exists():
-        texture_image = Image.open(texture_path)
-        # UV coordinates based on vertex x,y positions (maps top face correctly)
-        uv = np.zeros((len(board_mesh.vertices), 2))
-        for i, v in enumerate(board_mesh.vertices):
-            uv[i, 0] = (v[0] + board_width / 2) / board_width
-            uv[i, 1] = (v[1] + board_length / 2) / board_length
-        material = trimesh.visual.material.PBRMaterial(
-            baseColorTexture=texture_image,
-            metallicFactor=0.0,
-            roughnessFactor=1.0,
-        )
-        board_mesh.visual = trimesh.visual.TextureVisuals(uv=uv, material=material)
-    else:
-        board_mesh.visual.face_colors = [0, 100, 0, 255]  # Green fallback
-
-    return server.scene.add_mesh_trimesh("/sensor/board", mesh=board_mesh)
+    # Board dimensions: 13mm x 18mm x 1mm (measured from Pololu carrier board)
+    dimensions = (0.013, 0.018, 0.001)
+    return _create_board_mesh_generic(
+        server,
+        scene_path="/sensor/board",
+        dimensions=dimensions,
+        texture_path=assets_dir / "vl53l5cx-top.jpg",
+        fallback_color=(0, 100, 0, 255),  # Green
+        z_offset=-dimensions[2] / 2,  # Top face at z=0
+    )
 
 
 def create_imu_board_mesh(server: viser.ViserServer, assets_dir: Path):
@@ -99,35 +126,15 @@ def create_imu_board_mesh(server: viser.ViserServer, assets_dir: Path):
     Returns:
         Mesh handle
     """
-    # GY-BNO08X board dimensions: 15mm x 26mm x 1mm (width x length x height)
-    # Board is portrait orientation (taller than wide)
-    board_width = 0.015  # 15mm
-    board_length = 0.026  # 26mm
-    board_height = 0.001  # 1mm
-
-    # Create box centered at origin
-    board_mesh = trimesh.creation.box(extents=[board_width, board_length, board_height])
-
-    # Load texture and apply to box
-    texture_path = assets_dir / "bno08x-top.jpg"
-    if texture_path.exists():
-        texture_image = Image.open(texture_path)
-        # UV coordinates based on vertex x,y positions (maps top face correctly)
-        uv = np.zeros((len(board_mesh.vertices), 2))
-        for i, v in enumerate(board_mesh.vertices):
-            uv[i, 0] = (v[0] + board_width / 2) / board_width
-            uv[i, 1] = (v[1] + board_length / 2) / board_length
-        material = trimesh.visual.material.PBRMaterial(
-            baseColorTexture=texture_image,
-            metallicFactor=0.0,
-            roughnessFactor=1.0,
-        )
-        board_mesh.visual = trimesh.visual.TextureVisuals(uv=uv, material=material)
-    else:
-        # Purple fallback color
-        board_mesh.visual.face_colors = [128, 0, 128, 255]
-
-    return server.scene.add_mesh_trimesh("/sensor/imu_board", mesh=board_mesh)
+    # GY-BNO08X board dimensions: 15mm x 26mm x 1mm
+    dimensions = (0.015, 0.026, 0.001)
+    return _create_board_mesh_generic(
+        server,
+        scene_path="/sensor/imu_board",
+        dimensions=dimensions,
+        texture_path=assets_dir / "bno08x-top.jpg",
+        fallback_color=(128, 0, 128, 255),  # Purple
+    )
 
 
 def create_zone_rays(
