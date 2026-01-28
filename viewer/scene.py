@@ -133,7 +133,7 @@ def create_imu_board_mesh(server: viser.ViserServer, assets_dir: Path):
 def create_zone_rays(
     server: viser.ViserServer,
     zone_angles: ZoneAngles,
-) -> list:
+) -> tuple[list, "viser.FrameHandle"]:
     """Create zone ray visualization (64 rays showing discrete sampling directions).
 
     Args:
@@ -141,8 +141,11 @@ def create_zone_rays(
         zone_angles: Pre-computed zone angle data
 
     Returns:
-        List of ray handles
+        Tuple of (list of ray handles, parent frame handle for transformation)
     """
+    # Create parent frame for all rays - this allows transforming all rays together
+    rays_frame = server.scene.add_frame("/sensor/rays", show_axes=False)
+
     min_z = config.MIN_RANGE_MM / 1000  # 20mm in metres
     max_z = config.MAX_RANGE_MM / 1000  # 4000mm in metres
 
@@ -167,4 +170,4 @@ def create_zone_rays(
         )
         zone_rays.append(ray)
 
-    return zone_rays
+    return zone_rays, rays_frame

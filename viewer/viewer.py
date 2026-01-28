@@ -53,7 +53,7 @@ class VL53L5CXViewer:
         # ToF is ~1 inch (25.4mm) in -Y direction from IMU on breadboard
         IMU_TO_TOF_OFFSET = np.array([0.0, -0.0254, 0.0])  # meters
 
-        zone_rays = create_zone_rays(server, self.zone_angles)
+        zone_rays, rays_frame = create_zone_rays(server, self.zone_angles)
 
         # Setup GUI
         with server.gui.add_folder("Sensor Info"):
@@ -235,17 +235,21 @@ class VL53L5CXViewer:
                         points = rotate_points_by_quaternion(points, corrected_quat)
                         points = points + tof_position
 
-                        # Update board positions
+                        # Update board and rays positions
                         imu_board_mesh.wxyz = corrected_quat
                         imu_board_mesh.position = (0.0, 0.0, 0.0)  # IMU at origin
                         tof_board_mesh.wxyz = corrected_quat
                         tof_board_mesh.position = tuple(tof_position)
+                        rays_frame.wxyz = corrected_quat
+                        rays_frame.position = tuple(tof_position)
                     else:
-                        # Reset boards to identity orientation and default positions
+                        # Reset boards and rays to identity orientation and default positions
                         imu_board_mesh.wxyz = (1.0, 0.0, 0.0, 0.0)
                         imu_board_mesh.position = (0.0, 0.0, 0.0)
                         tof_board_mesh.wxyz = (1.0, 0.0, 0.0, 0.0)
                         tof_board_mesh.position = tuple(IMU_TO_TOF_OFFSET)
+                        rays_frame.wxyz = (1.0, 0.0, 0.0, 0.0)
+                        rays_frame.position = tuple(IMU_TO_TOF_OFFSET)
                     colors = get_colors(distances, status)
 
                     # Filter out invalid points (keep only valid ones for display)
