@@ -1,5 +1,8 @@
 """VL53L5CX sensor configuration constants."""
 
+# Package version (semantic versioning) - must match firmware
+VERSION = "0.1.0"
+
 # Sensor resolution
 RESOLUTION = 8  # 8x8 zones
 NUM_ZONES = 64

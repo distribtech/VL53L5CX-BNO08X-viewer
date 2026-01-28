@@ -35,6 +35,7 @@ class SerialReader:
         self._data_fps = 0.0
 
         self._thread: threading.Thread | None = None
+        self._version_checked = False
 
     @property
     def data_fps(self) -> float:
@@ -148,6 +149,21 @@ class SerialReader:
                                     if "quat" in data and not self._validate_quaternion(data["quat"]):
                                         logger.warning("Invalid quaternion values detected (NaN/Inf)")
                                         data.pop("quat")  # Still process distances, skip bad quaternion
+                                    # Check version (warn once)
+                                    if not self._version_checked:
+                                        self._version_checked = True
+                                        firmware_version = data.get("v")
+                                        if firmware_version is None:
+                                            logger.warning(
+                                                "No version in data. "
+                                                "Firmware may be outdated - consider reflashing."
+                                            )
+                                        elif firmware_version != config.VERSION:
+                                            logger.warning(
+                                                "Version mismatch: firmware=%s, viewer=%s. "
+                                                "Consider reflashing the ESP32.",
+                                                firmware_version, config.VERSION
+                                            )
                                     with self._data_lock:
                                         self.distances = np.array(distances, dtype=np.float32)
                                         self.status = np.array(status, dtype=np.uint8)
@@ -155,6 +171,8 @@ class SerialReader:
                                             self.quaternion = np.array(
                                                 data["quat"], dtype=np.float32
                                             )
+                                        else:
+                                            logger.debug("No quaternion data in packet (IMU may not be connected or firmware outdated)")
                                     # Track data FPS
                                     self._frame_count += 1
                                     now = time.time()
