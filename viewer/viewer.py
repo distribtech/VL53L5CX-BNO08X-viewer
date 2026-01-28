@@ -246,7 +246,7 @@ class VL53L5CXViewer:
                         rays_frame.position = tuple(IMU_TO_TOF_OFFSET)
                     colors = get_colors(distances, status)
 
-                    # Filter out invalid points (keep only valid ones for display)
+                    # Filter out invalid points (status 5 = valid measurement)
                     valid_mask = (status == 5) & (distances >= config.MIN_RANGE_MM)
 
                     if np.any(valid_mask):

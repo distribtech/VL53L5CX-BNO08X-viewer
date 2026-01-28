@@ -116,7 +116,7 @@ def get_colors(distances: np.ndarray, status: np.ndarray) -> np.ndarray:
         1,
     )
 
-    # Valid status is 5, treat others as potentially invalid
+    # Status 5 = valid measurement
     valid = status == 5
 
     # Color gradient: blue (0,0,255) -> cyan -> green -> yellow -> red (255,0,0)

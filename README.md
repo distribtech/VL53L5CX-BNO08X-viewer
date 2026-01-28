@@ -51,11 +51,18 @@ Open http://localhost:8080 in your browser.
 
 ## Sensor Specs
 
-- **Resolution:** 8x8 zones (64 points)
 - **FoV:** 65° diagonal
 - **Range:** 20mm - 4000mm
-- **Update rate:** 15 Hz
 - **Distance type:** Perpendicular (z-axis), not radial. The chip converts ToF measurements internally so a flat surface perpendicular to the sensor reports the same distance across all zones.
+
+**Resolution options:**
+
+| Resolution | Zones | Max Frequency |
+| ---------- | ----- | ------------- |
+| 4x4        | 16    | 60 Hz         |
+| 8x8        | 64    | 15 Hz         |
+
+Currently configured for 8x8 at 15Hz.
 
 ## Serial Protocol
 
@@ -66,6 +73,6 @@ The ESP32 streams JSON over serial at 115200 baud:
 ```
 
 - `distances`: 64 values in mm (perpendicular distance)
-- `status`: 64 values where `5` = valid measurement
+- `status`: 64 values (5 = valid measurement)
 
 Zones are row-major: 0-7 = row 0, 8-15 = row 1, etc.
