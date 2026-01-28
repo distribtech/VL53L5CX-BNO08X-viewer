@@ -178,22 +178,16 @@ class VL53L5CXViewer:
                 clear_accumulated()
 
         def voxel_downsample(points: np.ndarray, colors: np.ndarray, voxel_size: float) -> tuple[np.ndarray, np.ndarray]:
-            """Downsample points using voxel grid."""
+            """Downsample points using voxel grid (vectorized for performance)."""
             if len(points) == 0:
                 return points, colors
-            # Quantize points to voxel grid
-            voxel_indices = np.floor(points / voxel_size).astype(np.int32)
-            # Use dictionary to keep one point per voxel (last one wins)
-            voxel_dict: dict[tuple, tuple[np.ndarray, np.ndarray]] = {}
-            for i, idx in enumerate(voxel_indices):
-                key = tuple(idx)
-                voxel_dict[key] = (points[i], colors[i])
-            # Extract unique points
-            if len(voxel_dict) == 0:
-                return np.empty((0, 3), dtype=np.float32), np.empty((0, 3), dtype=np.uint8)
-            unique_points = np.array([v[0] for v in voxel_dict.values()], dtype=np.float32)
-            unique_colors = np.array([v[1] for v in voxel_dict.values()], dtype=np.uint8)
-            return unique_points, unique_colors
+            # Quantize points to voxel grid indices
+            voxel_indices = np.floor(points / voxel_size).astype(np.int64)
+            # Create unique key for each voxel using structured array view
+            # This is much faster than Python dict iteration
+            keys = voxel_indices.view(dtype=[('x', np.int64), ('y', np.int64), ('z', np.int64)]).ravel()
+            _, unique_idx = np.unique(keys, return_index=True)
+            return points[unique_idx], colors[unique_idx]
 
         # Plane handle for visibility control
         plane_handle = None
@@ -264,37 +258,49 @@ class VL53L5CXViewer:
                             accumulated_points.append(valid_points)
                             accumulated_colors.append(valid_colors)
 
-                            # Combine all accumulated points
-                            all_points = np.vstack(accumulated_points)
-                            all_colors = np.vstack(accumulated_colors)
+                            # Only run expensive downsampling when buffer gets large
+                            # (every ~10 frames worth of new points)
+                            total_new_points = sum(len(p) for p in accumulated_points)
+                            if total_new_points > 500 or len(accumulated_points) > 15:
+                                # Combine all accumulated points
+                                all_points = np.vstack(accumulated_points)
+                                all_colors = np.vstack(accumulated_colors)
 
-                            # Apply voxel downsampling
-                            voxel_size_m = voxel_size_slider.value / 1000.0
-                            all_points, all_colors = voxel_downsample(
-                                all_points, all_colors, voxel_size_m
-                            )
+                                # Apply voxel downsampling
+                                voxel_size_m = voxel_size_slider.value / 1000.0
+                                all_points, all_colors = voxel_downsample(
+                                    all_points, all_colors, voxel_size_m
+                                )
 
-                            # Enforce max points limit
-                            max_points = max_points_slider.value * 1000
-                            if len(all_points) > max_points:
-                                # Keep most recent points
-                                all_points = all_points[-max_points:]
-                                all_colors = all_colors[-max_points:]
+                                # Enforce max points limit
+                                max_points = max_points_slider.value * 1000
+                                if len(all_points) > max_points:
+                                    # Keep most recent points
+                                    all_points = all_points[-max_points:]
+                                    all_colors = all_colors[-max_points:]
 
-                            # Store downsampled result back (in-place to avoid scope issues)
-                            accumulated_points.clear()
-                            accumulated_points.append(all_points)
-                            accumulated_colors.clear()
-                            accumulated_colors.append(all_colors)
+                                # Store downsampled result back
+                                accumulated_points.clear()
+                                accumulated_points.append(all_points)
+                                accumulated_colors.clear()
+                                accumulated_colors.append(all_colors)
+
+                            # Get current state for display
+                            if len(accumulated_points) == 1:
+                                display_points = accumulated_points[0]
+                                display_colors = accumulated_colors[0]
+                            else:
+                                display_points = np.vstack(accumulated_points)
+                                display_colors = np.vstack(accumulated_colors)
 
                             # Update point count display
-                            point_count_text.value = f"{len(all_points):,}"
+                            point_count_text.value = f"{len(display_points):,}"
 
                             # Display accumulated map
                             server.scene.add_point_cloud(
                                 "/sensor/points",
-                                points=all_points,
-                                colors=all_colors,
+                                points=display_points,
+                                colors=display_colors,
                                 point_size=point_size_slider.value,
                                 point_shape="circle",
                             )
