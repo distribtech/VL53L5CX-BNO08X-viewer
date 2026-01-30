@@ -33,10 +33,15 @@ class ZoneAngles:
     st_sin_yaw: np.ndarray  # sin(yaw) for each zone
     st_cos_yaw: np.ndarray  # cos(yaw) for each zone
 
-    # Ray directions for visualization (shared between methods)
+    # Ray directions for visualization - uniform method
     ray_dir_x: np.ndarray  # Normalized ray direction X component
     ray_dir_y: np.ndarray  # Normalized ray direction Y component
     ray_dir_z: np.ndarray  # Normalized ray direction Z component
+
+    # Ray directions for visualization - ST lookup method
+    st_ray_dir_x: np.ndarray
+    st_ray_dir_y: np.ndarray
+    st_ray_dir_z: np.ndarray
 
 
 def compute_zone_angles() -> ZoneAngles:
@@ -93,6 +98,18 @@ def compute_zone_angles() -> ZoneAngles:
     st_sin_yaw = np.sin(yaw_rad)
     st_cos_yaw = np.cos(yaw_rad)
 
+    # Compute ST ray directions (normalized)
+    # Ray direction = (cos_yaw * cos_pitch, sin_yaw * cos_pitch, sin_pitch)
+    # Negate X to match our lens-flip convention
+    st_ray_dir_x = -st_cos_yaw * st_cos_pitch
+    st_ray_dir_y = st_sin_yaw * st_cos_pitch
+    st_ray_dir_z = st_sin_pitch
+    # Normalize (should already be unit length, but ensure)
+    st_norm = np.sqrt(st_ray_dir_x**2 + st_ray_dir_y**2 + st_ray_dir_z**2)
+    st_ray_dir_x = st_ray_dir_x / st_norm
+    st_ray_dir_y = st_ray_dir_y / st_norm
+    st_ray_dir_z = st_ray_dir_z / st_norm
+
     return ZoneAngles(
         tan_x=tan_x,
         tan_y=tan_y,
@@ -103,6 +120,9 @@ def compute_zone_angles() -> ZoneAngles:
         ray_dir_x=ray_dir_x,
         ray_dir_y=ray_dir_y,
         ray_dir_z=ray_dir_z,
+        st_ray_dir_x=st_ray_dir_x,
+        st_ray_dir_y=st_ray_dir_y,
+        st_ray_dir_z=st_ray_dir_z,
     )
 
 
@@ -143,7 +163,8 @@ def distances_to_points(
         hyp = z_mm / zone_angles.st_sin_pitch  # in mm
         hyp_m = hyp / 1000.0  # convert to meters
 
-        x = zone_angles.st_cos_yaw * zone_angles.st_cos_pitch * hyp_m
+        # Negate X to match our lens-flip convention (ST tables use different X direction)
+        x = -zone_angles.st_cos_yaw * zone_angles.st_cos_pitch * hyp_m
         y = zone_angles.st_sin_yaw * zone_angles.st_cos_pitch * hyp_m
         z = z_m  # Z is still the perpendicular distance
 

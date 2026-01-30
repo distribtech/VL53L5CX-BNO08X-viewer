@@ -10,7 +10,7 @@ import viser
 
 from . import config
 from .config import BoardConfig
-from .geometry import ZoneAngles
+from .geometry import CoordinateMethod, ZoneAngles
 
 
 def _yaw_to_wxyz(yaw_deg: float) -> tuple[float, float, float, float]:
@@ -223,3 +223,48 @@ def _create_zone_rays(
         zone_rays.append(ray)
 
     return zone_rays
+
+
+def update_zone_rays(
+    server: viser.ViserServer,
+    zone_angles: ZoneAngles,
+    method: CoordinateMethod,
+) -> None:
+    """Update zone ray positions based on coordinate method."""
+    min_range = config.MIN_RANGE_MM / 1000
+    max_range = config.MAX_RANGE_MM / 1000
+
+    for i in range(config.NUM_ZONES):
+        if method == CoordinateMethod.UNIFORM:
+            # Use tangent-based directions
+            dir_x = zone_angles.tan_x[i]
+            dir_y = zone_angles.tan_y[i]
+            dir_z = 1.0
+        else:
+            # Use ST lookup ray directions (already normalized)
+            dir_x = zone_angles.st_ray_dir_x[i]
+            dir_y = zone_angles.st_ray_dir_y[i]
+            dir_z = zone_angles.st_ray_dir_z[i]
+            # Scale to match tangent-style (z=1 convention)
+            if dir_z > 0:
+                dir_x = dir_x / dir_z
+                dir_y = dir_y / dir_z
+                dir_z = 1.0
+
+        start = np.array([
+            min_range * dir_x,
+            min_range * dir_y,
+            min_range * dir_z,
+        ], dtype=np.float32)
+        end = np.array([
+            max_range * dir_x,
+            max_range * dir_y,
+            max_range * dir_z,
+        ], dtype=np.float32)
+
+        server.scene.add_spline_catmull_rom(
+            f"/breadboard/tof/sensor/rays/ray_{i}",
+            positions=np.array([start, end], dtype=np.float32),
+            color=(100, 150, 255),
+            line_width=1.0,
+        )

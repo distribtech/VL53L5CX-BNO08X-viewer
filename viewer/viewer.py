@@ -21,7 +21,7 @@ from .geometry import (
     get_colors,
 )
 from .logging_config import setup_logging
-from .scene import create_grid, create_scene_hierarchy
+from .scene import create_grid, create_scene_hierarchy, update_zone_rays
 from .serial_reader import SerialReader
 
 logger = logging.getLogger("vl53l5cx_viewer.main")
@@ -136,6 +136,14 @@ class VL53L5CXViewer:
                 options=[m.value for m in CoordinateMethod],
                 initial_value=CoordinateMethod.UNIFORM.value,
             )
+
+            @self.coord_method_dropdown.on_update
+            def _on_coord_method_change(event: viser.GuiEvent) -> None:
+                method = next(
+                    m for m in CoordinateMethod if m.value == self.coord_method_dropdown.value
+                )
+                update_zone_rays(server, self.zone_angles, method)
+
             server.gui.add_markdown("---")
             self.imu_rotation_checkbox = server.gui.add_checkbox(
                 "Apply IMU Rotation", initial_value=True
