@@ -142,7 +142,10 @@ class VL53L5CXViewer:
                 method = next(
                     m for m in CoordinateMethod if m.value == self.coord_method_dropdown.value
                 )
-                update_zone_rays(server, self.zone_angles, method)
+                # Update rays and replace stale handles
+                self.scene.zone_rays = update_zone_rays(
+                    server, self.zone_angles, method, visible=self.show_rays_checkbox.value
+                )
 
             server.gui.add_markdown("---")
             self.imu_rotation_checkbox = server.gui.add_checkbox(
@@ -171,6 +174,9 @@ class VL53L5CXViewer:
             self.ransac_threshold_slider = server.gui.add_slider(
                 "RANSAC Threshold (mm)", min=1, max=50, step=1, initial_value=10, visible=False
             )
+            self.plane_error_text = server.gui.add_text(
+                "Plane RMSE (mm)", initial_value="--"
+            )
 
             @self.fit_plane_checkbox.on_update
             def _on_fit_plane_toggle(event: viser.GuiEvent) -> None:
@@ -179,6 +185,8 @@ class VL53L5CXViewer:
                     self.fit_plane_checkbox.value
                     and self.plane_method_dropdown.value == "RANSAC"
                 )
+                if not self.fit_plane_checkbox.value:
+                    self.plane_error_text.value = "--"
 
             @self.plane_method_dropdown.on_update
             def _on_plane_method_change(event: viser.GuiEvent) -> None:
@@ -350,7 +358,8 @@ class VL53L5CXViewer:
                         plane_fit = fit_plane(valid_local)
 
                     if plane_fit is not None:
-                        pos, wxyz, size = plane_fit
+                        pos, wxyz, size, rmse_mm = plane_fit
+                        self.plane_error_text.value = f"{rmse_mm:.2f}"
                         plane_handle = server.scene.add_box(
                             "/breadboard/tof/sensor/plane",
                             dimensions=(size, size, 0.0001),

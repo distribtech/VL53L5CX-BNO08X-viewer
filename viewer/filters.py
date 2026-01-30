@@ -51,17 +51,17 @@ class TemporalFilter:
 def _fit_plane_from_points(
     points: np.ndarray,
     padding: float = 1.2,
-) -> tuple[np.ndarray, np.ndarray, float] | None:
+) -> tuple[np.ndarray, np.ndarray, float, float] | None:
     """Fit a plane to 3D points using least squares and return visualization params.
 
-    Internal helper that fits z = ax + by + c and returns position, orientation, size.
+    Internal helper that fits z = ax + by + c and returns position, orientation, size, error.
 
     Args:
         points: Nx3 array of 3D points (must have at least 3 points)
         padding: Multiplier for plane size (1.0 = exact fit)
 
     Returns:
-        Tuple of (position, wxyz_quaternion, size) or None if fitting fails
+        Tuple of (position, wxyz_quaternion, size, rmse_mm) or None if fitting fails
     """
     x = points[:, 0]
     y = points[:, 1]
@@ -81,6 +81,14 @@ def _fit_plane_from_points(
     # Normal vector: n = (-a, -b, 1) (unnormalized)
     normal = np.array([-a, -b, 1.0])
     normal = normal / np.linalg.norm(normal)
+
+    # Compute point-to-plane distances for RMSE
+    # Distance from point (x,y,z) to plane ax + by - z + c = 0 is:
+    # |ax + by - z + c| / sqrt(a^2 + b^2 + 1)
+    denom = np.sqrt(a**2 + b**2 + 1)
+    residuals = np.abs(a * x + b * y - z + c) / denom
+    rmse_m = np.sqrt(np.mean(residuals**2))
+    rmse_mm = rmse_m * 1000  # Convert to mm
 
     # Compute centroid of points
     centroid = points.mean(axis=0)
@@ -108,13 +116,13 @@ def _fit_plane_from_points(
     quat_xyzw = r.as_quat()  # scipy returns xyzw
     wxyz = np.array([quat_xyzw[3], quat_xyzw[0], quat_xyzw[1], quat_xyzw[2]])
 
-    return position, wxyz, plane_size
+    return position, wxyz, plane_size, rmse_mm
 
 
 def fit_plane(
     points: np.ndarray,
     padding: float = 1.2,
-) -> tuple[np.ndarray, np.ndarray, float] | None:
+) -> tuple[np.ndarray, np.ndarray, float, float] | None:
     """Fit a plane to 3D points using least squares.
 
     Args:
@@ -122,7 +130,7 @@ def fit_plane(
         padding: Multiplier for plane size (1.0 = exact fit)
 
     Returns:
-        Tuple of (position, wxyz_quaternion, size) or None if fitting fails
+        Tuple of (position, wxyz_quaternion, size, rmse_mm) or None if fitting fails
     """
     if len(points) < 3:
         return None
@@ -134,7 +142,7 @@ def fit_plane_ransac(
     threshold: float = 0.01,
     iterations: int = 100,
     padding: float = 1.2,
-) -> tuple[np.ndarray, np.ndarray, float] | None:
+) -> tuple[np.ndarray, np.ndarray, float, float] | None:
     """Fit a plane to 3D points using RANSAC for robust outlier rejection.
 
     Args:
@@ -144,7 +152,7 @@ def fit_plane_ransac(
         padding: Multiplier for plane size (1.0 = exact fit)
 
     Returns:
-        Tuple of (position, wxyz_quaternion, size) or None if fitting fails
+        Tuple of (position, wxyz_quaternion, size, rmse_mm) or None if fitting fails
     """
     if len(points) < 3:
         return None

@@ -229,11 +229,16 @@ def update_zone_rays(
     server: viser.ViserServer,
     zone_angles: ZoneAngles,
     method: CoordinateMethod,
-) -> None:
-    """Update zone ray positions based on coordinate method."""
+    visible: bool = True,
+) -> list:
+    """Update zone ray positions based on coordinate method.
+
+    Returns the new ray handles (the old ones become stale).
+    """
     min_range = config.MIN_RANGE_MM / 1000
     max_range = config.MAX_RANGE_MM / 1000
 
+    new_rays = []
     for i in range(config.NUM_ZONES):
         if method == CoordinateMethod.UNIFORM:
             # Use tangent-based directions
@@ -262,9 +267,13 @@ def update_zone_rays(
             max_range * dir_z,
         ], dtype=np.float32)
 
-        server.scene.add_spline_catmull_rom(
+        ray = server.scene.add_spline_catmull_rom(
             f"/breadboard/tof/sensor/rays/ray_{i}",
             positions=np.array([start, end], dtype=np.float32),
             color=(100, 150, 255),
             line_width=1.0,
+            visible=visible,
         )
+        new_rays.append(ray)
+
+    return new_rays
