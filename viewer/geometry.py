@@ -1,6 +1,7 @@
 """Geometry and coordinate transformation utilities for VL53L5CX."""
 
 from dataclasses import dataclass
+from enum import Enum
 
 import numpy as np
 from scipy.spatial.transform import Rotation
@@ -8,12 +9,31 @@ from scipy.spatial.transform import Rotation
 from . import config
 
 
+class CoordinateMethod(Enum):
+    """Coordinate transformation method."""
+
+    UNIFORM = "Uniform Grid"  # Assumes uniform angular spacing (ideal pinhole model)
+    ST_LOOKUP = "ST Lookup Table"  # Uses ST-calibrated pitch/yaw tables
+
+
 @dataclass
 class ZoneAngles:
-    """Pre-computed zone angle data for coordinate transforms."""
+    """Pre-computed zone angle data for coordinate transforms.
 
+    Contains precomputed values for both uniform grid and ST lookup table methods.
+    """
+
+    # Uniform grid method values
     tan_x: np.ndarray  # Tangent of X angles for each zone
     tan_y: np.ndarray  # Tangent of Y angles for each zone
+
+    # ST lookup table method values (precomputed sin/cos for performance)
+    st_sin_pitch: np.ndarray  # sin(pitch) for each zone
+    st_cos_pitch: np.ndarray  # cos(pitch) for each zone
+    st_sin_yaw: np.ndarray  # sin(yaw) for each zone
+    st_cos_yaw: np.ndarray  # cos(yaw) for each zone
+
+    # Ray directions for visualization (shared between methods)
     ray_dir_x: np.ndarray  # Normalized ray direction X component
     ray_dir_y: np.ndarray  # Normalized ray direction Y component
     ray_dir_z: np.ndarray  # Normalized ray direction Z component
@@ -23,7 +43,9 @@ def compute_zone_angles() -> ZoneAngles:
     """Pre-compute the angle for each zone center.
 
     The sensor lens flips the image, so zone 0 corresponds to top-right.
+    Computes values for both uniform grid and ST lookup table methods.
     """
+    # === Uniform Grid Method ===
     # Convert diagonal FoV to per-axis FoV (assuming square sensor)
     # For a square, diagonal = side * sqrt(2), so side = diagonal / sqrt(2)
     fov_per_axis_deg = config.FOV_DIAGONAL_DEG / np.sqrt(2)
@@ -61,16 +83,34 @@ def compute_zone_angles() -> ZoneAngles:
     ray_dir_y = tan_y / norm
     ray_dir_z = 1.0 / norm
 
+    # === ST Lookup Table Method ===
+    # Precompute sin/cos for ST-calibrated pitch/yaw angles
+    pitch_rad = np.deg2rad(config.ST_PITCH_ANGLES_DEG)
+    yaw_rad = np.deg2rad(config.ST_YAW_ANGLES_DEG)
+
+    st_sin_pitch = np.sin(pitch_rad)
+    st_cos_pitch = np.cos(pitch_rad)
+    st_sin_yaw = np.sin(yaw_rad)
+    st_cos_yaw = np.cos(yaw_rad)
+
     return ZoneAngles(
         tan_x=tan_x,
         tan_y=tan_y,
+        st_sin_pitch=st_sin_pitch,
+        st_cos_pitch=st_cos_pitch,
+        st_sin_yaw=st_sin_yaw,
+        st_cos_yaw=st_cos_yaw,
         ray_dir_x=ray_dir_x,
         ray_dir_y=ray_dir_y,
         ray_dir_z=ray_dir_z,
     )
 
 
-def distances_to_points(distances: np.ndarray, zone_angles: ZoneAngles) -> np.ndarray:
+def distances_to_points(
+    distances: np.ndarray,
+    zone_angles: ZoneAngles,
+    method: CoordinateMethod = CoordinateMethod.UNIFORM,
+) -> np.ndarray:
     """Convert distance measurements to 3D point coordinates.
 
     The sensor is assumed to be pointing UP (+Z direction),
@@ -81,16 +121,31 @@ def distances_to_points(distances: np.ndarray, zone_angles: ZoneAngles) -> np.nd
     Args:
         distances: Array of 64 distance values in mm (perpendicular)
         zone_angles: Pre-computed zone angle data
+        method: Coordinate transformation method to use
 
     Returns:
         Nx3 array of (x, y, z) coordinates in meters
     """
-    # Convert to meters - this IS the z-coordinate
-    z = distances / 1000.0
+    # Convert to meters
+    z_mm = distances
+    z_m = distances / 1000.0
 
-    # Calculate XY positions: lateral offset at this z-distance
-    x = z * zone_angles.tan_x
-    y = z * zone_angles.tan_y
+    if method == CoordinateMethod.UNIFORM:
+        # Uniform grid method: assumes uniform angular spacing
+        # z IS the perpendicular distance, use tangent for lateral offset
+        x = z_m * zone_angles.tan_x
+        y = z_m * zone_angles.tan_y
+        z = z_m
+    else:
+        # ST lookup table method: uses calibrated pitch/yaw angles
+        # Hypotenuse = z_perpendicular / sin(pitch)
+        # Then project using pitch/yaw to get XYZ
+        hyp = z_mm / zone_angles.st_sin_pitch  # in mm
+        hyp_m = hyp / 1000.0  # convert to meters
+
+        x = zone_angles.st_cos_yaw * zone_angles.st_cos_pitch * hyp_m
+        y = zone_angles.st_sin_yaw * zone_angles.st_cos_pitch * hyp_m
+        z = z_m  # Z is still the perpendicular distance
 
     return np.column_stack([x, y, z])
 

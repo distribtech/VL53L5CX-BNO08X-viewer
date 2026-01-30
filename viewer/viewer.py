@@ -14,6 +14,7 @@ from scipy.spatial.transform import Rotation
 from . import config
 from .filters import TemporalFilter, fit_plane, fit_plane_ransac
 from .geometry import (
+    CoordinateMethod,
     compute_zone_angles,
     correct_imu_to_tof_frame,
     distances_to_points,
@@ -129,6 +130,12 @@ class VL53L5CXViewer:
                 "Point Size", min=0.001, max=0.020, step=0.001, initial_value=0.005
             )
             self.show_rays_checkbox = server.gui.add_checkbox("Show Zone Rays", initial_value=True)
+            server.gui.add_markdown("---")
+            self.coord_method_dropdown = server.gui.add_dropdown(
+                "Coordinate Method",
+                options=[m.value for m in CoordinateMethod],
+                initial_value=CoordinateMethod.UNIFORM.value,
+            )
             server.gui.add_markdown("---")
             self.imu_rotation_checkbox = server.gui.add_checkbox(
                 "Apply IMU Rotation", initial_value=True
@@ -254,8 +261,13 @@ class VL53L5CXViewer:
             server.scene.remove_by_name("/map/points")
 
         if np.any(distances > 0):
+            # Get selected coordinate method
+            coord_method = next(
+                m for m in CoordinateMethod if m.value == self.coord_method_dropdown.value
+            )
+
             # Points in sensor-local coordinates (z forward from sensor)
-            points_local = distances_to_points(distances, self.zone_angles)
+            points_local = distances_to_points(distances, self.zone_angles, coord_method)
             colors = get_colors(distances, status)
             valid_mask = (status == 5) & (distances >= config.MIN_RANGE_MM)
 
