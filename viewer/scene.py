@@ -230,8 +230,17 @@ def update_zone_rays(
     zone_angles: ZoneAngles,
     method: CoordinateMethod,
     visible: bool = True,
+    distances: np.ndarray | None = None,
 ) -> list:
     """Update zone ray positions based on coordinate method.
+
+    Args:
+        server: Viser server instance.
+        zone_angles: Pre-computed zone angle data.
+        method: Coordinate transform method.
+        visible: Whether rays should be visible.
+        distances: Optional per-zone distances in mm. If provided, rays are clipped
+            to the measured distance instead of MAX_RANGE_MM.
 
     Returns the new ray handles (the old ones become stale).
     """
@@ -256,15 +265,21 @@ def update_zone_rays(
                 dir_y = dir_y / dir_z
                 dir_z = 1.0
 
+        # Use measured distance if provided and valid, otherwise max range
+        if distances is not None and distances[i] >= config.MIN_RANGE_MM:
+            end_range = distances[i] / 1000
+        else:
+            end_range = max_range
+
         start = np.array([
             min_range * dir_x,
             min_range * dir_y,
             min_range * dir_z,
         ], dtype=np.float32)
         end = np.array([
-            max_range * dir_x,
-            max_range * dir_y,
-            max_range * dir_z,
+            end_range * dir_x,
+            end_range * dir_y,
+            end_range * dir_z,
         ], dtype=np.float32)
 
         ray = server.scene.add_spline_catmull_rom(

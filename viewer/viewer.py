@@ -130,6 +130,25 @@ class VL53L5CXViewer:
                 "Point Size", min=0.001, max=0.020, step=0.001, initial_value=0.005
             )
             self.show_rays_checkbox = server.gui.add_checkbox("Show Zone Rays", initial_value=True)
+            self.clip_rays_checkbox = server.gui.add_checkbox(
+                "Clip to Measurement", initial_value=False
+            )
+
+            @self.show_rays_checkbox.on_update
+            def _on_show_rays_toggle(event: viser.GuiEvent) -> None:
+                self.clip_rays_checkbox.disabled = not self.show_rays_checkbox.value
+
+            @self.clip_rays_checkbox.on_update
+            def _on_clip_rays_toggle(event: viser.GuiEvent) -> None:
+                if not self.clip_rays_checkbox.value:
+                    # Recreate full-length rays when clip mode is disabled
+                    method = next(
+                        m for m in CoordinateMethod if m.value == self.coord_method_dropdown.value
+                    )
+                    self.scene.zone_rays = update_zone_rays(
+                        server, self.zone_angles, method, visible=self.show_rays_checkbox.value
+                    )
+
             server.gui.add_markdown("---")
             self.coord_method_dropdown = server.gui.add_dropdown(
                 "Coordinate Method",
@@ -380,8 +399,20 @@ class VL53L5CXViewer:
             plane_handle.visible = self.fit_plane_checkbox.value
 
         self.freq_text.value = f"{self.serial_reader.data_fps:.1f}"
-        for ray in self.scene.zone_rays:
-            ray.visible = self.show_rays_checkbox.value
+
+        # Update zone rays visibility and clipping
+        if self.show_rays_checkbox.value and self.clip_rays_checkbox.value:
+            # Recreate rays clipped to measured distances
+            coord_method = next(
+                m for m in CoordinateMethod if m.value == self.coord_method_dropdown.value
+            )
+            self.scene.zone_rays = update_zone_rays(
+                server, self.zone_angles, coord_method,
+                visible=True, distances=distances
+            )
+        else:
+            for ray in self.scene.zone_rays:
+                ray.visible = self.show_rays_checkbox.value
 
         return plane_handle
 
