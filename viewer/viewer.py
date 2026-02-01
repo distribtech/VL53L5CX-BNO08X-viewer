@@ -423,7 +423,6 @@ class VL53L5CXViewer:
 
 
 def main():
-    setup_logging()
     parser = argparse.ArgumentParser(description="VL53L5CX Point Cloud Viewer")
     parser.add_argument(
         "--port",
@@ -440,7 +439,13 @@ def main():
     parser.add_argument(
         "--viser-port", type=int, default=8080, help="Viser server port (default: 8080)"
     )
+    parser.add_argument(
+        "--debug", "-d", action="store_true", help="Enable debug logging"
+    )
     args = parser.parse_args()
+
+    import logging
+    setup_logging(level=logging.DEBUG if args.debug else logging.INFO)
 
     viewer = VL53L5CXViewer(port=args.port, baud=args.baud)
     viewer.run(host=args.host, port=args.viser_port)
