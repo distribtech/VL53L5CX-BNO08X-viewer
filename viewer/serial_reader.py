@@ -118,7 +118,7 @@ class SerialReader:
                 except Exception:
                     pass
             self.serial = serial.Serial(self.port, self.baud, timeout=1)
-            time.sleep(0.5)  # Brief wait for device to initialize
+            time.sleep(2)  # Wait for ESP32/sensor to initialize
             self.serial.reset_input_buffer()
             logger.info("Serial reconnected")
             return True
