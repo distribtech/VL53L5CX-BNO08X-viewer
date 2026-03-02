@@ -42,6 +42,13 @@ Both sensors share the I2C bus (same SDA/SCL pins).
 
 ## Installation
 
+### Prerequisites
+
+- Python 3.10+
+- `pip`
+- `arduino-cli` with ESP32 core installed (`esp32:esp32`)
+- ESP32 connected over USB for firmware upload
+
 ### ESP32 Firmware
 
 ```bash
@@ -63,8 +70,30 @@ Firmware defaults:
 ### Python Viewer
 
 ```bash
+python -m venv .venv
+source .venv/bin/activate   # Windows PowerShell: .venv\Scripts\Activate.ps1
 pip install -r viewer/requirements.txt
 ```
+
+## Run
+
+### 1) Flash the ESP32 firmware
+
+```bash
+arduino-cli compile --fqbn esp32:esp32:esp32 firmware/vl53l5cx_reader
+arduino-cli upload --fqbn esp32:esp32:esp32 --port /dev/cu.usbserial-0001 firmware/vl53l5cx_reader
+```
+
+### 2) Start viewer (default Wi-Fi workflow)
+
+1. Connect your computer to the ESP32 AP: `VL53L5CX-Viewer` (password: `viewer123`)
+2. Start the app:
+
+```bash
+python -m viewer
+```
+
+3. Open the UI at `http://localhost:8080`
 
 ## Usage
 
@@ -96,14 +125,45 @@ python -m viewer --transport serial --port /dev/USBtty0
 
 Open the Viser web app at http://localhost:8080 in your browser.
 
-**Options:**
+## Configuration
+
+### Runtime options (CLI)
+
 - `--transport`: Data source transport: `wifi` (default) or `serial`
 - `--wifi-host`: ESP32 stream host for Wi-Fi mode (default: `192.168.4.1`)
 - `--wifi-port`: ESP32 stream port for Wi-Fi mode (default: `8765`)
 - `--port`, `-p`: Serial port for serial mode (default: `/dev/cu.usbserial-0001`)
 - `--baud`, `-b`: Baud rate (default: `115200`)
+- `--host`: Host interface for the local Viser server (default: `0.0.0.0`)
 - `--viser-port`: Viser server port (default: `8080`)
 - `--debug`: Enable verbose logging
+
+Examples:
+
+```bash
+# Default Wi-Fi mode
+python -m viewer
+
+# Serial mode (useful during firmware bring-up)
+python -m viewer --transport serial --port /dev/cu.usbserial-0001 --baud 115200
+
+# Custom network setup
+python -m viewer --wifi-host 192.168.4.1 --wifi-port 8765 --host 0.0.0.0 --viser-port 8080
+```
+
+### Firmware-side defaults
+
+- AP SSID: `VL53L5CX-Viewer`
+- AP password: `viewer123`
+- TCP stream endpoint: `192.168.4.1:8765`
+- Serial stream: enabled at `115200` baud
+
+## Development options (when and why to use them)
+
+- `--transport serial`: Best when debugging firmware over USB, testing without Wi-Fi, or running inside environments where joining the ESP32 AP is inconvenient.
+- `--debug`: Prints additional connection/parse logs to help diagnose malformed packets or disconnect/reconnect behavior.
+- `--host` + `--viser-port`: Useful when exposing the viewer to another machine (e.g., WSL, Docker, remote device on LAN).
+- Keeping **both Wi-Fi and serial streams** in firmware gives a stable default path (Wi-Fi) and a reliable fallback path (USB serial) for development.
 
 ## Sensor Specs
 
