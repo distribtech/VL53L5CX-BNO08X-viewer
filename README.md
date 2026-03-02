@@ -11,6 +11,8 @@ Real-time 3D point cloud viewer for the VL53L5CX multi-zone time-of-flight senso
 - **Temporal filtering** - Exponential moving average smooths noisy measurements
 - **Plane fitting** - Least squares and RANSAC methods for surface detection
 - **Mapping mode** - Accumulate points over time to build a 3D map of your environment
+- **Wi-Fi default workflow** - ESP32 starts an access point and streams sensor JSON over TCP
+- **Dev serial fallback** - Keep serial mode available via CLI options for development
 
 ## Hardware
 
@@ -52,6 +54,12 @@ arduino-cli compile --fqbn esp32:esp32:esp32 firmware/vl53l5cx_reader
 arduino-cli upload --fqbn esp32:esp32:esp32 --port /dev/cu.usbserial-0001 firmware/vl53l5cx_reader
 ```
 
+Firmware defaults:
+- Starts Wi-Fi Access Point: `VL53L5CX-Viewer`
+- Password: `viewer123`
+- TCP data stream: `192.168.4.1:8765`
+- Keeps serial JSON output enabled for development/debugging
+
 ### Python Viewer
 
 ```bash
@@ -63,7 +71,8 @@ pip install -r viewer/requirements.txt
 # In Linux
 
 ```bash
-python -m viewer --port /dev/cu.usbserial-0001
+# Default mode (recommended): connect your computer to ESP32 AP and run
+python -m viewer
 ```
 # In Windows WSL Linux Ubuntu
 
@@ -82,13 +91,16 @@ BUSID  VID:PID    DEVICE                                                        
 Now attach usb port to wsl Ubuntu
 usbipd attach --wsl --busid 1-2
 
-python -m viewer --port /dev/USBtty0
+python -m viewer --transport serial --port /dev/USBtty0
 ```
 
-Open http://localhost:8080 in your browser.
+Open the Viser web app at http://localhost:8080 in your browser.
 
 **Options:**
-- `--port`, `-p`: Serial port (default: `/dev/cu.usbserial-0001`)
+- `--transport`: Data source transport: `wifi` (default) or `serial`
+- `--wifi-host`: ESP32 stream host for Wi-Fi mode (default: `192.168.4.1`)
+- `--wifi-port`: ESP32 stream port for Wi-Fi mode (default: `8765`)
+- `--port`, `-p`: Serial port for serial mode (default: `/dev/cu.usbserial-0001`)
 - `--baud`, `-b`: Baud rate (default: `115200`)
 - `--viser-port`: Viser server port (default: `8080`)
 - `--debug`: Enable verbose logging
@@ -107,9 +119,13 @@ Open http://localhost:8080 in your browser.
 
 Currently configured for 8x8 at 15Hz.
 
-## Serial Protocol
+## Data Protocol (Wi-Fi + Serial)
 
-The ESP32 streams JSON over serial at 115200 baud:
+The ESP32 streams newline-delimited JSON packets over:
+- Wi-Fi TCP (`192.168.4.1:8765`, default)
+- Serial (`115200` baud, dev fallback)
+
+Packet format:
 
 ```json
 {"distances":[d0,d1,...,d63],"status":[s0,s1,...,s63],"quat":[w,x,y,z]}

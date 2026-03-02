@@ -13,6 +13,7 @@
  */
 
 #include <Wire.h>
+#include <WiFi.h>
 #include <SparkFun_VL53L5CX_Library.h>
 #include <SparkFun_BNO08x_Arduino_Library.h>
 
@@ -38,11 +39,53 @@ float quatW = 1.0, quatX = 0.0, quatY = 0.0, quatZ = 0.0;
 // I2C speed - use 1MHz for fast data transfer
 #define I2C_SPEED 1000000
 
+// Wi-Fi access point (default transport)
+const char* WIFI_AP_SSID = "VL53L5CX-Viewer";
+const char* WIFI_AP_PASSWORD = "viewer123";
+const uint16_t WIFI_STREAM_PORT = 8765;
+WiFiServer dataServer(WIFI_STREAM_PORT);
+WiFiClient dataClient;
+
+void sendJsonLine(const String& payload) {
+  // Keep serial output for development workflows.
+  Serial.println(payload);
+
+  // Stream to Wi-Fi client when connected.
+  if (dataClient && dataClient.connected()) {
+    dataClient.println(payload);
+  }
+}
+
+void serviceWifiClient() {
+  if (dataClient && !dataClient.connected()) {
+    dataClient.stop();
+  }
+  if (!dataClient || !dataClient.connected()) {
+    WiFiClient candidate = dataServer.available();
+    if (candidate) {
+      dataClient = candidate;
+    }
+  }
+}
+
 void setup() {
   Serial.begin(115200);
   delay(1000);
 
-  Serial.println("{\"status\":\"initializing\"}");
+  sendJsonLine("{\"status\":\"initializing\"}");
+
+  // Start AP for default wireless mode.
+  WiFi.mode(WIFI_AP);
+  WiFi.softAP(WIFI_AP_SSID, WIFI_AP_PASSWORD);
+  dataServer.begin();
+  String wifiReady = String("{\"status\":\"wifi_ap_ready\",\"ssid\":\"")
+    + WIFI_AP_SSID
+    + "\",\"ip\":\""
+    + WiFi.softAPIP().toString()
+    + "\",\"port\":"
+    + WIFI_STREAM_PORT
+    + "}";
+  sendJsonLine(wifiReady);
 
   // Enable I2C on sensor by setting LPn HIGH
   pinMode(LPN_PIN, OUTPUT);
@@ -53,17 +96,17 @@ void setup() {
   Wire.begin(SDA_PIN, SCL_PIN);
   Wire.setClock(I2C_SPEED);
 
-  Serial.println("{\"status\":\"i2c_ready\"}");
+  sendJsonLine("{\"status\":\"i2c_ready\"}");
 
   // Initialize sensor
   if (!sensor.begin()) {
-    Serial.println("{\"error\":\"sensor_init_failed\"}");
+    sendJsonLine("{\"error\":\"sensor_init_failed\"}");
     while (1) {
       delay(1000);
     }
   }
 
-  Serial.println("{\"status\":\"sensor_found\"}");
+  sendJsonLine("{\"status\":\"sensor_found\"}");
 
   // Configure sensor for 8x8 resolution
   sensor.setResolution(64);  // 64 zones = 8x8
@@ -74,7 +117,7 @@ void setup() {
   // Start ranging
   sensor.startRanging();
 
-  Serial.println("{\"status\":\"ranging_started\",\"resolution\":\"8x8\",\"frequency_hz\":15}");
+  sendJsonLine("{\"status\":\"ranging_started\",\"resolution\":\"8x8\",\"frequency_hz\":15}");
 
   // Initialize BNO08X IMU (shares I2C bus with VL53L5CX)
   // Try default address 0x4A first, then alternate 0x4B
@@ -88,13 +131,15 @@ void setup() {
     // Enable game rotation vector at 10ms interval (100Hz)
     // Game rotation uses accel+gyro only (no magnetometer) - immune to magnetic interference
     imu.enableGameRotationVector(10);
-    Serial.println("{\"status\":\"imu_ready\",\"mode\":\"game_rotation_vector\",\"frequency_hz\":100}");
+    sendJsonLine("{\"status\":\"imu_ready\",\"mode\":\"game_rotation_vector\",\"frequency_hz\":100}");
   } else {
-    Serial.println("{\"status\":\"imu_not_found\"}");
+    sendJsonLine("{\"status\":\"imu_not_found\"}");
   }
 }
 
 void loop() {
+  serviceWifiClient();
+
   // Poll IMU for new orientation data (non-blocking)
   if (imuAvailable && imu.wasReset()) {
     // Re-enable game rotation vector if IMU was reset
@@ -114,31 +159,32 @@ void loop() {
   if (sensor.isDataReady()) {
     if (sensor.getRangingData(&measurementData)) {
       // Output JSON with distance and quaternion data
-      Serial.print("{\"distances\":[");
+      String payload = "{\"distances\":[";
 
       for (int i = 0; i < 64; i++) {
         // Distance in mm
-        Serial.print(measurementData.distance_mm[i]);
-        if (i < 63) Serial.print(",");
+        payload += measurementData.distance_mm[i];
+        if (i < 63) payload += ",";
       }
 
-      Serial.print("],\"status\":[");
+      payload += "],\"status\":[";
 
       for (int i = 0; i < 64; i++) {
         // Target status (5 = valid, others = various error states)
-        Serial.print(measurementData.target_status[i]);
-        if (i < 63) Serial.print(",");
+        payload += measurementData.target_status[i];
+        if (i < 63) payload += ",";
       }
 
       // Add quaternion (wxyz format) with 6 decimal places for accuracy
-      Serial.print("],\"quat\":[");
-      Serial.print(quatW, 6); Serial.print(",");
-      Serial.print(quatX, 6); Serial.print(",");
-      Serial.print(quatY, 6); Serial.print(",");
-      Serial.print(quatZ, 6);
-      Serial.print("],\"v\":\"");
-      Serial.print(VERSION);
-      Serial.println("\"}");
+      payload += "],\"quat\":[";
+      payload += String(quatW, 6) + ",";
+      payload += String(quatX, 6) + ",";
+      payload += String(quatY, 6) + ",";
+      payload += String(quatZ, 6);
+      payload += "],\"v\":\"";
+      payload += VERSION;
+      payload += "\"}";
+      sendJsonLine(payload);
     }
   }
 

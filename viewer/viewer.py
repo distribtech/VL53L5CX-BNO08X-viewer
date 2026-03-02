@@ -23,6 +23,7 @@ from .geometry import (
 from .logging_config import setup_logging
 from .scene import create_grid, create_scene_hierarchy, update_zone_rays
 from .serial_reader import SerialReader
+from .wifi_reader import WifiReader
 
 logger = logging.getLogger("vl53l5cx_viewer.main")
 
@@ -91,8 +92,18 @@ def voxel_downsample(
 class VL53L5CXViewer:
     """Real-time point cloud viewer for VL53L5CX ToF sensor."""
 
-    def __init__(self, port: str, baud: int = 115200):
-        self.serial_reader = SerialReader(port, baud)
+    def __init__(
+        self,
+        transport: str = "wifi",
+        serial_port: str = "/dev/cu.usbserial-0001",
+        baud: int = 115200,
+        wifi_host: str = "192.168.4.1",
+        wifi_port: int = 8765,
+    ):
+        if transport == "serial":
+            self.data_reader = SerialReader(serial_port, baud)
+        else:
+            self.data_reader = WifiReader(host=wifi_host, port=wifi_port)
         self.zone_angles = compute_zone_angles()
         self.temporal_filter = TemporalFilter()
 
@@ -280,12 +291,12 @@ class VL53L5CXViewer:
         self, server: viser.ViserServer, mapping_state: MappingState, plane_handle
     ):
         """Process a single frame of sensor data."""
-        distances, status, quaternion = self.serial_reader.get_data()
+        distances, status, quaternion = self.data_reader.get_data()
 
         if self.filter_checkbox.value:
             distances = self.temporal_filter.apply(distances, self.filter_strength_slider.value)
 
-        imu_connected = self.serial_reader.imu_connected
+        imu_connected = self.data_reader.imu_connected
         self.imu_status_text.value = "Connected" if imu_connected else "Not detected"
 
         corrected_quat = correct_imu_to_tof_frame(quaternion) if imu_connected else quaternion
@@ -398,7 +409,7 @@ class VL53L5CXViewer:
         if plane_handle is not None:
             plane_handle.visible = self.fit_plane_checkbox.value
 
-        self.freq_text.value = f"{self.serial_reader.data_fps:.1f}"
+        self.freq_text.value = f"{self.data_reader.data_fps:.1f}"
 
         # Update zone rays visibility and clipping
         if self.show_rays_checkbox.value and self.clip_rays_checkbox.value:
@@ -418,8 +429,8 @@ class VL53L5CXViewer:
 
     def run(self, host: str = "0.0.0.0", port: int = 8080):
         """Start the viewer."""
-        self.serial_reader.connect()
-        self.serial_reader.start()
+        self.data_reader.connect()
+        self.data_reader.start()
 
         server = viser.ViserServer(host=host, port=port)
         logger.info("Viser server started at http://localhost:%d", port)
@@ -450,19 +461,36 @@ class VL53L5CXViewer:
         except KeyboardInterrupt:
             logger.info("Shutting down...")
         finally:
-            self.serial_reader.stop()
+            self.data_reader.stop()
 
 
 def main():
     parser = argparse.ArgumentParser(description="VL53L5CX Point Cloud Viewer")
     parser.add_argument(
+        "--transport",
+        choices=["wifi", "serial"],
+        default="wifi",
+        help="Data transport mode (default: wifi)",
+    )
+    parser.add_argument(
         "--port",
         "-p",
         default="/dev/cu.usbserial-0001",
-        help="Serial port (default: /dev/cu.usbserial-0001)",
+        help="Serial port for --transport serial (default: /dev/cu.usbserial-0001)",
     )
     parser.add_argument(
         "--baud", "-b", type=int, default=115200, help="Baud rate (default: 115200)"
+    )
+    parser.add_argument(
+        "--wifi-host",
+        default="192.168.4.1",
+        help="ESP32 Wi-Fi stream host for --transport wifi (default: 192.168.4.1)",
+    )
+    parser.add_argument(
+        "--wifi-port",
+        type=int,
+        default=8765,
+        help="ESP32 Wi-Fi stream port for --transport wifi (default: 8765)",
     )
     parser.add_argument(
         "--host", default="0.0.0.0", help="Viser server host (default: 0.0.0.0)"
@@ -478,7 +506,13 @@ def main():
     import logging
     setup_logging(level=logging.DEBUG if args.debug else logging.INFO)
 
-    viewer = VL53L5CXViewer(port=args.port, baud=args.baud)
+    viewer = VL53L5CXViewer(
+        transport=args.transport,
+        serial_port=args.port,
+        baud=args.baud,
+        wifi_host=args.wifi_host,
+        wifi_port=args.wifi_port,
+    )
     viewer.run(host=args.host, port=args.viser_port)
 
 
