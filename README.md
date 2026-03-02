@@ -1,10 +1,4 @@
-<<<<<<< HEAD
 # VL53L5CX-BNO08X-viewer (original repo https://github.com/ferrolho/VL53L5CX-BNO08X-viewer)
-=======
-# THIS IS COPY OF https://github.com/ferrolho/VL53L5CX-BNO08X-viewer JUST FOR RUN FROM WINDOWS WSL UBUNTU 20
-
-# VL53L5CX-BNO08X-viewer
->>>>>>> 678f416
 
 Real-time 3D point cloud viewer for the VL53L5CX multi-zone time-of-flight sensor with BNO085 IMU orientation tracking.
 
