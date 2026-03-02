@@ -62,8 +62,29 @@ pip install -r viewer/requirements.txt
 
 ## Usage
 
+# In Linux
+
 ```bash
 python -m viewer --port /dev/cu.usbserial-0001
+```
+# In Windows WSL Linux Ubuntu
+
+```powershell
+usbipd list
+
+Example of output:
+Connected:
+BUSID  VID:PID    DEVICE                                                        STATE
+1-1    046d:c542  USB-устройство ввода                                          Not shared
+1-2    10c4:ea60  Silicon Labs CP210x USB to UART Bridge (COM6)                 Shared
+1-6    04ca:7053  HP HD Camera                                                  Not shared
+1-7    8087:0a2a  Intel(R) Wireless Bluetooth(R)                                Not shared
+1-8    138a:003f  Synaptics FP Sensors (WBF) (PID=003f)                         Not shared
+
+Now attach usb port to wsl Ubuntu
+usbipd attach --wsl --busid 1-2
+
+python -m viewer --port /dev/USBtty0
 ```
 
 Open http://localhost:8080 in your browser.
