@@ -433,7 +433,17 @@ class VL53L5CXViewer:
         self.data_reader.start()
 
         server = viser.ViserServer(host=host, port=port)
-        logger.info("Viser server started at http://localhost:%d", port)
+        if host in ("0.0.0.0", "::"):
+            logger.info(
+                "Viser server started on all interfaces at port %d "
+                "(open http://localhost:%d on this machine, or "
+                "http://<this-machine-ip>:%d from another device on the same network)",
+                port,
+                port,
+                port,
+            )
+        else:
+            logger.info("Viser server started at http://%s:%d", host, port)
 
         @server.on_client_connect
         def on_client_connect(client: viser.ClientHandle) -> None:
