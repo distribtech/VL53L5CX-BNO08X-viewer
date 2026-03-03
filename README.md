@@ -11,7 +11,7 @@ Real-time 3D point cloud viewer for the VL53L5CX multi-zone time-of-flight senso
 - **Temporal filtering** - Exponential moving average smooths noisy measurements
 - **Plane fitting** - Least squares and RANSAC methods for surface detection
 - **Mapping mode** - Accumulate points over time to build a 3D map of your environment
-- **Wi-Fi default workflow** - ESP32 starts an access point and streams sensor JSON over TCP
+- **ESP32-hosted web interface (default)** - ESP32 starts an access point, hosts a mode-selection web page, and streams sensor JSON over TCP
 - **Dev serial fallback** - Keep serial mode available via CLI options for development
 
 ## Hardware
@@ -64,6 +64,7 @@ arduino-cli upload --fqbn esp32:esp32:esp32 --port /dev/ttyUSB0 firmware/vl53l5c
 Firmware defaults:
 - Starts Wi-Fi Access Point: `VL53L5CX-Viewer`
 - Password: `viewer123`
+- ESP32 web page (mode selector): `http://192.168.4.1/`
 - TCP data stream: `192.168.4.1:8765`
 - Keeps serial JSON output enabled for development/debugging
 
@@ -84,18 +85,27 @@ arduino-cli compile --fqbn esp32:esp32:esp32 firmware/vl53l5cx_reader
 arduino-cli upload --fqbn esp32:esp32:esp32 --port /dev/cu.usbserial-0001 firmware/vl53l5cx_reader
 ```
 
-### 2) Start viewer (default Wi-Fi workflow)
+### 2) Open the default ESP32 web interface
 
 1. Connect your computer to the ESP32 AP: `VL53L5CX-Viewer` (password: `viewer123`)
-2. Start the app:
+2. Open `http://192.168.4.1/`
+3. Choose one of the two options in the ESP32 page:
+   - **Use ESP32 web interface (default)**
+   - **Use Python `-m viewer`**
+
+### 3) Optional: Start Python 3D viewer
+
+If you choose Python mode in the ESP32 page:
+
+1. Start the app:
 
 ```bash
 python -m viewer
 ```
 
-3. Open the UI at `http://localhost:8080` on the same computer running `python -m viewer`
+2. Open the UI at `http://localhost:8080` on the same computer running `python -m viewer`
    - From another device (for example a phone), open `http://<computer-ip>:8080`.
-   - Do **not** open `http://192.168.4.1:8080` — `192.168.4.1` is the ESP32 stream endpoint, not the Viser web UI host.
+   - `http://192.168.4.1/` is still served by ESP32, while Python Viser runs on your computer.
 
 ## Usage
 
