@@ -93,7 +93,9 @@ arduino-cli upload --fqbn esp32:esp32:esp32 --port /dev/cu.usbserial-0001 firmwa
 python -m viewer
 ```
 
-3. Open the UI at `http://localhost:8080`
+3. Open the UI at `http://localhost:8080` on the same computer running `python -m viewer`
+   - From another device (for example a phone), open `http://<computer-ip>:8080`.
+   - Do **not** open `http://192.168.4.1:8080` — `192.168.4.1` is the ESP32 stream endpoint, not the Viser web UI host.
 
 ## Usage
 
@@ -123,7 +125,7 @@ usbipd attach --wsl --busid 1-2
 python -m viewer --transport serial --port /dev/USBtty0
 ```
 
-Open the Viser web app at http://localhost:8080 in your browser.
+Open the Viser web app at http://localhost:8080 in your browser (or `http://<computer-ip>:8080` from another device on the same network).
 
 ## Configuration
 
