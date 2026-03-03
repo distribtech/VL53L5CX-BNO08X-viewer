@@ -14,6 +14,7 @@
 
 #include <Wire.h>
 #include <WiFi.h>
+#include <WebServer.h>
 #include <SparkFun_VL53L5CX_Library.h>
 #include <SparkFun_BNO08x_Arduino_Library.h>
 
@@ -42,9 +43,88 @@ float quatW = 1.0, quatX = 0.0, quatY = 0.0, quatZ = 0.0;
 // Wi-Fi access point (default transport)
 const char* WIFI_AP_SSID = "VL53L5CX-Viewer";
 const char* WIFI_AP_PASSWORD = "viewer123";
+const uint16_t WIFI_WEB_PORT = 80;
 const uint16_t WIFI_STREAM_PORT = 8765;
 WiFiServer dataServer(WIFI_STREAM_PORT);
 WiFiClient dataClient;
+WebServer webServer(WIFI_WEB_PORT);
+
+String buildLandingPage() {
+  String html;
+  html.reserve(2200);
+  html += F("<!doctype html><html><head><meta charset='utf-8'>");
+  html += F("<meta name='viewport' content='width=device-width,initial-scale=1'>");
+  html += F("<title>VL53L5CX Viewer</title>");
+  html += F("<style>");
+  html += F("body{font-family:system-ui,-apple-system,sans-serif;background:#111827;color:#f9fafb;margin:0;padding:24px;}");
+  html += F(".card{max-width:820px;margin:0 auto;background:#1f2937;border:1px solid #374151;border-radius:14px;padding:20px;}");
+  html += F("h1{margin-top:0;font-size:1.4rem;}p{line-height:1.5;color:#d1d5db;}code{background:#111827;padding:2px 6px;border-radius:6px;}");
+  html += F(".btn{display:inline-block;text-decoration:none;color:#fff;background:#2563eb;padding:10px 16px;border-radius:10px;margin:6px 8px 6px 0;font-weight:600;}");
+  html += F(".btn.secondary{background:#374151;}ul{padding-left:18px;color:#d1d5db;}");
+  html += F("</style></head><body><div class='card'>");
+  html += F("<h1>VL53L5CX + BNO08X Viewer</h1>");
+  html += F("<p><strong>Default mode:</strong> web server hosted on the ESP32.</p>");
+  html += F("<p>Choose how you want to view data:</p>");
+  html += F("<a class='btn' href='/esp32'>Use ESP32 web interface (default)</a>");
+  html += F("<a class='btn secondary' href='/python'>Use Python <code>-m viewer</code></a>");
+  html += F("<h2>Connection details</h2><ul>");
+  html += F("<li>ESP32 web UI: <code>http://192.168.4.1/</code></li>");
+  html += F("<li>TCP sensor stream: <code>192.168.4.1:");
+  html += String(WIFI_STREAM_PORT);
+  html += F("</code></li>");
+  html += F("<li>Wi-Fi AP: <code>");
+  html += WIFI_AP_SSID;
+  html += F("</code></li></ul></div></body></html>");
+  return html;
+}
+
+String buildEsp32ModePage() {
+  String html;
+  html.reserve(1500);
+  html += F("<!doctype html><html><head><meta charset='utf-8'>");
+  html += F("<meta name='viewport' content='width=device-width,initial-scale=1'>");
+  html += F("<title>ESP32 Web Interface</title></head><body style='font-family:system-ui;background:#111827;color:#f9fafb;padding:24px'>");
+  html += F("<h1>ESP32 web interface active</h1>");
+  html += F("<p>This page is served directly by the ESP32 (default behavior).</p>");
+  html += F("<p>Sensor stream endpoint for integrations:</p>");
+  html += F("<p><code>192.168.4.1:");
+  html += String(WIFI_STREAM_PORT);
+  html += F("</code></p>");
+  html += F("<p><a href='/' style='color:#60a5fa'>← Back to mode selection</a></p></body></html>");
+  return html;
+}
+
+String buildPythonModePage() {
+  String html;
+  html.reserve(1700);
+  html += F("<!doctype html><html><head><meta charset='utf-8'>");
+  html += F("<meta name='viewport' content='width=device-width,initial-scale=1'>");
+  html += F("<title>Python Viewer Mode</title></head><body style='font-family:system-ui;background:#111827;color:#f9fafb;padding:24px'>");
+  html += F("<h1>Python viewer mode</h1>");
+  html += F("<p>To use the desktop 3D interface, run on your computer:</p>");
+  html += F("<pre style='background:#1f2937;border:1px solid #374151;border-radius:8px;padding:12px;overflow:auto'>python -m viewer</pre>");
+  html += F("<p>Then open <code>http://localhost:8080</code> on that computer.</p>");
+  html += F("<p><a href='/' style='color:#60a5fa'>← Back to mode selection</a></p></body></html>");
+  return html;
+}
+
+void setupWebServer() {
+  webServer.on("/", HTTP_GET, []() {
+    webServer.send(200, "text/html", buildLandingPage());
+  });
+  webServer.on("/esp32", HTTP_GET, []() {
+    webServer.send(200, "text/html", buildEsp32ModePage());
+  });
+  webServer.on("/python", HTTP_GET, []() {
+    webServer.send(200, "text/html", buildPythonModePage());
+  });
+  webServer.on("/status", HTTP_GET, []() {
+    String payload = String("{\"ssid\":\"") + WIFI_AP_SSID + "\",\"stream_port\":" + WIFI_STREAM_PORT
+      + ",\"imu\":" + (imuAvailable ? "true" : "false") + "}";
+    webServer.send(200, "application/json", payload);
+  });
+  webServer.begin();
+}
 
 void sendJsonLine(const String& payload) {
   // Keep serial output for development workflows.
@@ -78,12 +158,16 @@ void setup() {
   WiFi.mode(WIFI_AP);
   WiFi.softAP(WIFI_AP_SSID, WIFI_AP_PASSWORD);
   dataServer.begin();
+  setupWebServer();
   String wifiReady = String("{\"status\":\"wifi_ap_ready\",\"ssid\":\"")
     + WIFI_AP_SSID
     + "\",\"ip\":\""
     + WiFi.softAPIP().toString()
     + "\",\"port\":"
     + WIFI_STREAM_PORT
+    + ",\"web\":\"http://"
+    + WiFi.softAPIP().toString()
+    + "\""
     + "}";
   sendJsonLine(wifiReady);
 
@@ -138,6 +222,7 @@ void setup() {
 }
 
 void loop() {
+  webServer.handleClient();
   serviceWifiClient();
 
   // Poll IMU for new orientation data (non-blocking)
