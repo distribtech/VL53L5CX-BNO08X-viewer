@@ -58,7 +58,7 @@ arduino-cli lib install "SparkFun BNO08x Cortex Based IMU"
 
 # Compile and upload
 arduino-cli compile --fqbn esp32:esp32:esp32 firmware/vl53l5cx_reader
-arduino-cli upload --fqbn esp32:esp32:esp32 --port /dev/cu.usbserial-0001 firmware/vl53l5cx_reader
+arduino-cli upload --fqbn esp32:esp32:esp32 --port /dev/ttyUSB0 firmware/vl53l5cx_reader
 ```
 
 Firmware defaults:
@@ -145,7 +145,7 @@ Examples:
 python -m viewer
 
 # Serial mode (useful during firmware bring-up)
-python -m viewer --transport serial --port /dev/USBtty0 --baud 115200
+python -m viewer --transport serial --port /dev/ttyUSB0 --baud 115200
 
 # Custom network setup
 python -m viewer --wifi-host 192.168.4.1 --wifi-port 8765 --host 0.0.0.0 --viser-port 8080
