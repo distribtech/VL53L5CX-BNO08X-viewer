@@ -56,10 +56,19 @@ Both sensors share the I2C bus (same SDA/SCL pins).
 arduino-cli lib install "SparkFun VL53L5CX Arduino Library"
 arduino-cli lib install "SparkFun BNO08x Cortex Based IMU"
 
-# Compile and upload
+# Compile and upload firmware only
 arduino-cli compile --fqbn esp32:esp32:esp32 firmware/vl53l5cx_reader
 arduino-cli upload --fqbn esp32:esp32:esp32 --port /dev/ttyUSB0 firmware/vl53l5cx_reader
+
+# Recommended: compile + upload firmware + upload LittleFS app.html
+bin/flash_esp32.sh --port /dev/ttyUSB0
 ```
+
+Upload web assets from `firmware/vl53l5cx_reader/data/` to ESP32 LittleFS (required for `/app`):
+- Arduino IDE: use an ESP32 LittleFS data upload plugin/tool.
+- PlatformIO: `pio run -t uploadfs`.
+- This repo includes `bin/flash_esp32.sh` to upload firmware and LittleFS via CLI in one command.
+- If not uploaded, `/app` returns a fallback page telling you `app.html` is missing.
 
 Firmware defaults:
 - Starts Wi-Fi Access Point: `VL53L5CX-Viewer`
@@ -69,6 +78,7 @@ Firmware defaults:
 - ESP32 latest frame JSON: `http://192.168.4.1/latest`
 - TCP data stream: `192.168.4.1:8765`
 - Keeps serial JSON output enabled for development/debugging
+- `/app` is served from ESP32 LittleFS file: `firmware/vl53l5cx_reader/data/app.html`
 
 ### Python Viewer
 
@@ -95,7 +105,7 @@ arduino-cli upload --fqbn esp32:esp32:esp32 --port /dev/cu.usbserial-0001 firmwa
    - **Use ESP32 web interface (default)** -> opens `http://192.168.4.1/app`
    - **Use Python `-m viewer`**
 
-Note: the ESP32 page loads Three.js from CDN (`unpkg.com`). If your client has no internet access while connected to the ESP32 AP, the 3D page will not render and Python mode remains the reliable fallback.
+Note: `/app` is loaded from LittleFS (`data/app.html`) and still uses Three.js CDN (`unpkg.com`). If your client has no internet access while connected to the ESP32 AP, the 3D page will not render and Python mode remains the reliable fallback.
 
 ### 3) Optional: Start Python 3D viewer
 

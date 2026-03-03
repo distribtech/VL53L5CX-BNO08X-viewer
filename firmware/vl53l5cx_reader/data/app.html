@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>ESP32 ToF 3D Viewer</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+      background: radial-gradient(circle at 20% 10%, #1f2937, #030712 65%);
+      color: #f9fafb;
+    }
+    #hud {
+      position: fixed;
+      top: 12px;
+      left: 12px;
+      right: 12px;
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      z-index: 2;
+    }
+    .card {
+      background: rgba(17, 24, 39, 0.78);
+      border: 1px solid rgba(148, 163, 184, 0.35);
+      border-radius: 12px;
+      padding: 10px 12px;
+      backdrop-filter: blur(6px);
+    }
+    .title { font-weight: 700; font-size: 14px; margin-bottom: 2px; }
+    .small { font-size: 12px; color: #cbd5e1; }
+    #view { position: fixed; inset: 0; }
+    a { color: #93c5fd; text-decoration: none; }
+    .warn { color: #fca5a5; }
+  </style>
+</head>
+<body>
+  <div id="hud">
+    <div class="card">
+      <div class="title">ESP32 ToF Viewer</div>
+      <div class="small">AP: <code>VL53L5CX-Viewer</code></div>
+    </div>
+    <div class="card">
+      <div class="small">Frame: <span id="frame">-</span></div>
+      <div class="small">Age: <span id="age">-</span> ms</div>
+    </div>
+    <div class="card">
+      <div class="small">Valid zones: <span id="valid">-</span>/64</div>
+      <div class="small">Min/Max: <span id="minmax">-</span></div>
+    </div>
+    <div class="card">
+      <div class="small">Sources: <a href="/latest">/latest</a> | TCP <code>192.168.4.1:8765</code></div>
+      <div class="small"><a href="/">Mode selection</a> | <a href="/python">Python mode</a></div>
+    </div>
+    <div class="card"><div class="small warn" id="net">Waiting for sensor stream...</div></div>
+  </div>
+  <div id="view"></div>
+
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+      }
+    }
+  </script>
+  <script type="module">
+    import * as THREE from "https://unpkg.com/three@0.160.0/build/three.module.js";
+    import { OrbitControls } from "https://unpkg.com/three@0.160.0/examples/jsm/controls/OrbitControls.js";
+
+    const netEl = document.getElementById("net");
+    const frameEl = document.getElementById("frame");
+    const ageEl = document.getElementById("age");
+    const validEl = document.getElementById("valid");
+    const minmaxEl = document.getElementById("minmax");
+
+    const container = document.getElementById("view");
+    const scene = new THREE.Scene();
+    scene.fog = new THREE.Fog(0x030712, 0.6, 3.5);
+
+    const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.01, 20);
+    camera.position.set(0.0, 0.55, 0.85);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setClearColor(0x030712, 1);
+    container.appendChild(renderer.domElement);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.target.set(0, 0.16, 0);
+
+    scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+    const dl = new THREE.DirectionalLight(0xffffff, 0.9);
+    dl.position.set(1.1, 1.5, 0.7);
+    scene.add(dl);
+
+    const floor = new THREE.GridHelper(1.2, 12, 0x334155, 0x1f2937);
+    floor.position.y = -0.02;
+    scene.add(floor);
+
+    const cloud = new THREE.Group();
+    scene.add(cloud);
+    const rotRoot = new THREE.Group();
+    rotRoot.add(cloud);
+    scene.add(rotRoot);
+    const rays = new THREE.Group();
+    rotRoot.add(rays);
+
+    const points = [];
+    const geom = new THREE.SphereGeometry(0.011, 12, 10);
+    for (let i = 0; i < 64; i++) {
+      const mat = new THREE.MeshStandardMaterial({
+        color: 0x60a5fa,
+        roughness: 0.3,
+        metalness: 0.05,
+        emissive: 0x0b1220
+      });
+      const m = new THREE.Mesh(geom, mat);
+      cloud.add(m);
+      points.push(m);
+    }
+
+    const rayLines = [];
+    for (let i = 0; i < 64; i++) {
+      const g = new THREE.BufferGeometry();
+      const pos = new Float32Array([0, 0, 0, 0, 0, 0]);
+      g.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+      const l = new THREE.Line(
+        g,
+        new THREE.LineBasicMaterial({ color: 0x334155, transparent: true, opacity: 0.7 })
+      );
+      rays.add(l);
+      rayLines.push(l);
+    }
+
+    function heatColor(mm) {
+      const t = Math.max(0, Math.min(1, (mm - 120) / 1900));
+      const r = Math.round(255 * Math.min(1, 1.7 * t));
+      const g = Math.round(255 * (1 - Math.abs(t - 0.45) * 1.5));
+      const b = Math.round(255 * (1 - t));
+      return (r << 16) | (g << 8) | b;
+    }
+
+    const fov = 65 * Math.PI / 180;
+    const scale = Math.tan(fov / 2);
+    function zoneDir(idx) {
+      const row = Math.floor(idx / 8);
+      const col = idx % 8;
+      const nx = (col - 3.5) / 3.5;
+      const ny = (row - 3.5) / 3.5;
+      const x = nx * scale;
+      const y = ny * scale;
+      const z = 1;
+      const l = Math.hypot(x, y, z) || 1;
+      return [x / l, -y / l, z / l];
+    }
+    const dirs = Array.from({ length: 64 }, (_, i) => zoneDir(i));
+
+    function quatToEuler(q) {
+      const [w, x, y, z] = q;
+      const ys = 2 * (w * y - x * z);
+      const pitch = Math.asin(Math.max(-1, Math.min(1, ys)));
+      const roll = Math.atan2(2 * (w * x + y * z), 1 - 2 * (x * x + y * y));
+      const yaw = Math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z));
+      return { roll, pitch, yaw };
+    }
+
+    async function tick() {
+      try {
+        const r = await fetch("/latest", { cache: "no-store" });
+        if (!r.ok) throw new Error(`http ${r.status}`);
+        const d = await r.json();
+        if (!d.distances || d.distances.length !== 64) throw new Error("no frame");
+
+        let valid = 0;
+        let min = 1e9;
+        let max = 0;
+
+        for (let i = 0; i < 64; i++) {
+          const mm = Number(d.distances[i] || 0);
+          const ok = (d.status && d.status[i] === 5 && mm > 0);
+          const p = points[i];
+          const l = rayLines[i];
+
+          if (!ok) {
+            p.visible = false;
+            l.visible = false;
+            continue;
+          }
+
+          valid++;
+          min = Math.min(min, mm);
+          max = Math.max(max, mm);
+
+          const m = Math.min(mm, 3500) / 1000;
+          const v = dirs[i];
+          const x = v[0] * m;
+          const y = v[1] * m;
+          const z = v[2] * m;
+
+          p.visible = true;
+          p.position.set(x, y, z);
+          p.material.color.setHex(heatColor(mm));
+
+          const arr = l.geometry.attributes.position.array;
+          arr[3] = x;
+          arr[4] = y;
+          arr[5] = z;
+          l.geometry.attributes.position.needsUpdate = true;
+          l.visible = true;
+          l.material.color.setHex(heatColor(mm));
+        }
+
+        if (Array.isArray(d.quat) && d.quat.length === 4) {
+          const e = quatToEuler(d.quat);
+          rotRoot.rotation.set(e.roll, e.pitch, e.yaw, "XYZ");
+        }
+
+        frameEl.textContent = d.frame ?? "-";
+        ageEl.textContent = (d.age_ms ?? "-").toString();
+        validEl.textContent = String(valid);
+        minmaxEl.textContent = valid ? `${Math.round(min)} / ${Math.round(max)} mm` : "-";
+        netEl.textContent = "Live stream active";
+        netEl.style.color = "#86efac";
+      } catch (err) {
+        netEl.textContent = `Stream error: ${err.message}`;
+        netEl.style.color = "#fca5a5";
+      }
+    }
+
+    setInterval(tick, 120);
+    tick();
+
+    window.addEventListener("resize", () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    function animate() {
+      requestAnimationFrame(animate);
+      controls.update();
+      renderer.render(scene, camera);
+    }
+    animate();
+  </script>
+</body>
+</html>
