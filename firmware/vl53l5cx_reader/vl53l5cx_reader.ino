@@ -53,6 +53,43 @@ String lastFramePayload = "{\"status\":\"waiting_for_first_frame\"}";
 uint32_t lastFrameMillis = 0;
 uint32_t frameCounter = 0;
 bool littleFsReady = false;
+uint8_t currentResolutionZones = 64;
+uint8_t currentGridSize = 8;
+uint8_t currentRangingFrequencyHz = 15;
+bool sensorRangingActive = false;
+
+String currentResolutionLabel() {
+  if (currentResolutionZones == 16) return "4x4";
+  return "8x8";
+}
+
+bool configureSensorProfile(uint8_t zones) {
+  uint8_t targetZones = (zones == 16) ? 16 : 64;
+  uint8_t targetGrid = (targetZones == 16) ? 4 : 8;
+  uint8_t targetFreq = (targetZones == 16) ? 60 : 15;
+
+  if (sensorRangingActive) {
+    sensor.stopRanging();
+    delay(10);
+    sensorRangingActive = false;
+  }
+
+  if (!sensor.setResolution(targetZones)) {
+    return false;
+  }
+  if (!sensor.setRangingFrequency(targetFreq)) {
+    return false;
+  }
+  if (!sensor.startRanging()) {
+    return false;
+  }
+
+  currentResolutionZones = targetZones;
+  currentGridSize = targetGrid;
+  currentRangingFrequencyHz = targetFreq;
+  sensorRangingActive = true;
+  return true;
+}
 
 String buildLandingPage() {
   String html;
@@ -176,10 +213,42 @@ void setupWebServer() {
     }
     webServer.send(200, "application/json", payload);
   });
+  webServer.on("/config", HTTP_GET, []() {
+    String payload = String("{\"resolution\":\"") + currentResolutionLabel()
+      + "\",\"zones\":" + currentResolutionZones
+      + ",\"grid\":" + currentGridSize
+      + ",\"frequency_hz\":" + currentRangingFrequencyHz
+      + "}";
+    webServer.send(200, "application/json", payload);
+  });
+  webServer.on("/config", HTTP_POST, []() {
+    String requested = webServer.arg("resolution");
+    if (requested != "4x4" && requested != "8x8") {
+      webServer.send(400, "application/json", "{\"error\":\"resolution must be 4x4 or 8x8\"}");
+      return;
+    }
+
+    uint8_t zones = (requested == "4x4") ? 16 : 64;
+    if (!configureSensorProfile(zones)) {
+      webServer.send(500, "application/json", "{\"error\":\"failed_to_apply_resolution\"}");
+      return;
+    }
+
+    String payload = String("{\"ok\":true,\"resolution\":\"") + currentResolutionLabel()
+      + "\",\"zones\":" + currentResolutionZones
+      + ",\"grid\":" + currentGridSize
+      + ",\"frequency_hz\":" + currentRangingFrequencyHz
+      + "}";
+    webServer.send(200, "application/json", payload);
+    sendJsonLine(String("{\"status\":\"ranging_reconfigured\",\"resolution\":\"") + currentResolutionLabel()
+      + "\",\"frequency_hz\":" + currentRangingFrequencyHz + "}");
+  });
   webServer.on("/status", HTTP_GET, []() {
     String payload = String("{\"ssid\":\"") + WIFI_AP_SSID + "\",\"stream_port\":" + WIFI_STREAM_PORT
       + ",\"imu\":" + (imuAvailable ? "true" : "false")
       + ",\"littlefs\":" + (littleFsReady ? "true" : "false")
+      + ",\"resolution\":\"" + currentResolutionLabel() + "\""
+      + ",\"zones\":" + currentResolutionZones
       + ",\"latest\":\"/latest\",\"app\":\"/app\"}";
     webServer.send(200, "application/json", payload);
   });
@@ -255,16 +324,14 @@ void setup() {
 
   sendJsonLine("{\"status\":\"sensor_found\"}");
 
-  // Configure sensor for 8x8 resolution
-  sensor.setResolution(64);  // 64 zones = 8x8
-
-  // Set ranging frequency to 15Hz (stable for continuous streaming)
-  sensor.setRangingFrequency(15);
-
-  // Start ranging
-  sensor.startRanging();
-
-  sendJsonLine("{\"status\":\"ranging_started\",\"resolution\":\"8x8\",\"frequency_hz\":15}");
+  if (!configureSensorProfile(64)) {
+    sendJsonLine("{\"error\":\"sensor_profile_config_failed\"}");
+    while (1) {
+      delay(1000);
+    }
+  }
+  sendJsonLine(String("{\"status\":\"ranging_started\",\"resolution\":\"") + currentResolutionLabel()
+    + "\",\"frequency_hz\":" + currentRangingFrequencyHz + "}");
 
   // Initialize BNO08X IMU (shares I2C bus with VL53L5CX)
   // Try default address 0x4A first, then alternate 0x4B
@@ -309,18 +376,18 @@ void loop() {
       // Output JSON with distance and quaternion data
       String payload = "{\"distances\":[";
 
-      for (int i = 0; i < 64; i++) {
+      for (int i = 0; i < currentResolutionZones; i++) {
         // Distance in mm
         payload += measurementData.distance_mm[i];
-        if (i < 63) payload += ",";
+        if (i < (int)currentResolutionZones - 1) payload += ",";
       }
 
       payload += "],\"status\":[";
 
-      for (int i = 0; i < 64; i++) {
+      for (int i = 0; i < currentResolutionZones; i++) {
         // Target status (5 = valid, others = various error states)
         payload += measurementData.target_status[i];
-        if (i < 63) payload += ",";
+        if (i < (int)currentResolutionZones - 1) payload += ",";
       }
 
       // Add quaternion (wxyz format) with 6 decimal places for accuracy
@@ -329,7 +396,13 @@ void loop() {
       payload += String(quatX, 6) + ",";
       payload += String(quatY, 6) + ",";
       payload += String(quatZ, 6);
-      payload += "],\"v\":\"";
+      payload += "],\"resolution\":\"";
+      payload += currentResolutionLabel();
+      payload += "\",\"zones\":";
+      payload += currentResolutionZones;
+      payload += ",\"frequency_hz\":";
+      payload += currentRangingFrequencyHz;
+      payload += ",\"v\":\"";
       payload += VERSION;
       payload += "\"}";
       lastFramePayload = payload;
