@@ -53,6 +53,29 @@
       <div class="small">ToF rate: <span id="tof-freq">-</span> Hz</div>
     </div>
     <div class="card">
+      <div class="title">Sonification</div>
+      <div class="small">
+        <button id="audio-toggle" type="button">Enable Audio</button>
+        <span id="audio-state">off</span>
+      </div>
+      <div class="small">Algorithm:
+        <select id="sonify-algo">
+          <option value="nearest_ping">Nearest Ping</option>
+          <option value="sweep_melody">Sweep Melody</option>
+          <option value="stereo_bands">Stereo Bands</option>
+          <option value="depth_triad">Depth Triad</option>
+        </select>
+      </div>
+      <div class="small">Volume:
+        <input id="sonify-volume" type="range" min="0" max="100" value="35">
+      </div>
+      <div class="small">Rate:
+        <input id="sonify-rate" type="range" min="4" max="20" value="10">
+        <span id="sonify-rate-value">10</span> Hz
+      </div>
+      <div class="small" id="sonify-help">Nearest obstacle ping (stereo pan + depth pitch)</div>
+    </div>
+    <div class="card">
       <div class="small">Frame: <span id="frame">-</span></div>
       <div class="small">Age: <span id="age">-</span> ms</div>
     </div>
@@ -87,6 +110,13 @@
     const minmaxEl = document.getElementById("minmax");
     const resolutionSelect = document.getElementById("resolution-select");
     const tofFreqEl = document.getElementById("tof-freq");
+    const audioToggle = document.getElementById("audio-toggle");
+    const audioStateEl = document.getElementById("audio-state");
+    const sonifyAlgoEl = document.getElementById("sonify-algo");
+    const sonifyVolumeEl = document.getElementById("sonify-volume");
+    const sonifyRateEl = document.getElementById("sonify-rate");
+    const sonifyRateValueEl = document.getElementById("sonify-rate-value");
+    const sonifyHelpEl = document.getElementById("sonify-help");
 
     const container = document.getElementById("view");
     const scene = new THREE.Scene();
@@ -161,6 +191,19 @@
     const scale = Math.tan(fov / 2);
     let currentZoneCount = 64;
     let dirs = [];
+    let latestFrame = null;
+
+    const sonifyAlgorithmInfo = {
+      nearest_ping: "Nearest obstacle ping (stereo pan + depth pitch)",
+      sweep_melody: "Column sweep melody (left-to-right scanning)",
+      stereo_bands: "Left/center/right nearest zones as 3 stereo tones",
+      depth_triad: "Three closest obstacles as a depth-weighted chord"
+    };
+
+    let audioCtx = null;
+    let sonifyTimer = null;
+    let audioEnabled = false;
+    let sweepColumn = 0;
 
     function zoneDir(idx, grid) {
       const row = Math.floor(idx / grid);
@@ -190,6 +233,162 @@
       const roll = Math.atan2(2 * (w * x + y * z), 1 - 2 * (x * x + y * y));
       const yaw = Math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z));
       return { roll, pitch, yaw };
+    }
+
+    function gridSizeForZoneCount(zoneCount) {
+      const grid = Math.round(Math.sqrt(zoneCount));
+      return (grid * grid === zoneCount) ? grid : 8;
+    }
+
+    function zoneToPan(index, zoneCount) {
+      const grid = gridSizeForZoneCount(zoneCount);
+      const col = index % grid;
+      return grid <= 1 ? 0 : (col / (grid - 1)) * 2 - 1;
+    }
+
+    function zoneToRow(index, zoneCount) {
+      const grid = gridSizeForZoneCount(zoneCount);
+      return Math.floor(index / grid);
+    }
+
+    function depthNorm(mm) {
+      const clamped = Math.max(100, Math.min(3000, mm));
+      return (clamped - 100) / 2900;
+    }
+
+    function freqFromDepth(mm) {
+      return 280 + (1 - depthNorm(mm)) * 1240;
+    }
+
+    function gainFromDepth(mm) {
+      return 0.04 + (1 - depthNorm(mm)) * 0.22;
+    }
+
+    function ensureAudio() {
+      if (!audioCtx) {
+        const AudioCtor = window.AudioContext || window.webkitAudioContext;
+        audioCtx = new AudioCtor();
+      }
+      return audioCtx;
+    }
+
+    function playTone({ freq, pan, gain, duration = 0.12, type = "sine" }) {
+      if (!audioEnabled || !audioCtx) return;
+      const now = audioCtx.currentTime;
+      const osc = audioCtx.createOscillator();
+      const panner = audioCtx.createStereoPanner();
+      const amp = audioCtx.createGain();
+      const master = Math.max(0, Math.min(1, Number(sonifyVolumeEl.value) / 100));
+
+      osc.type = type;
+      osc.frequency.setValueAtTime(freq, now);
+      panner.pan.setValueAtTime(Math.max(-1, Math.min(1, pan)), now);
+
+      amp.gain.setValueAtTime(0.0001, now);
+      amp.gain.exponentialRampToValueAtTime(Math.max(0.0001, gain * master), now + 0.01);
+      amp.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+
+      osc.connect(panner);
+      panner.connect(amp);
+      amp.connect(audioCtx.destination);
+      osc.start(now);
+      osc.stop(now + duration + 0.02);
+    }
+
+    function extractValidSamples(frame) {
+      const samples = [];
+      const count = Math.min(frame.distances.length, frame.status ? frame.status.length : frame.distances.length);
+      for (let i = 0; i < count; i++) {
+        const mm = Number(frame.distances[i] || 0);
+        const ok = (!frame.status || frame.status[i] === 5) && mm > 0;
+        if (ok) {
+          samples.push({ index: i, mm, pan: zoneToPan(i, count), row: zoneToRow(i, count), zoneCount: count });
+        }
+      }
+      return samples;
+    }
+
+    function sonifyNearestPing(samples) {
+      const nearest = samples.reduce((a, b) => (a.mm < b.mm ? a : b));
+      playTone({
+        freq: freqFromDepth(nearest.mm),
+        pan: nearest.pan,
+        gain: gainFromDepth(nearest.mm) * 1.1,
+        duration: 0.12,
+        type: "triangle"
+      });
+    }
+
+    function sonifySweepMelody(samples) {
+      const zoneCount = samples[0].zoneCount;
+      const grid = gridSizeForZoneCount(zoneCount);
+      const current = samples
+        .filter((s) => (s.index % grid) === sweepColumn)
+        .sort((a, b) => a.mm - b.mm)[0];
+      sweepColumn = (sweepColumn + 1) % grid;
+      if (!current) return;
+      const rowNorm = grid <= 1 ? 0 : current.row / (grid - 1);
+      playTone({
+        freq: freqFromDepth(current.mm) + rowNorm * 180,
+        pan: current.pan,
+        gain: gainFromDepth(current.mm),
+        duration: 0.14,
+        type: "sine"
+      });
+    }
+
+    function sonifyStereoBands(samples) {
+      const byBand = {
+        left: samples.filter((s) => s.pan < -0.33).sort((a, b) => a.mm - b.mm)[0],
+        center: samples.filter((s) => s.pan >= -0.33 && s.pan <= 0.33).sort((a, b) => a.mm - b.mm)[0],
+        right: samples.filter((s) => s.pan > 0.33).sort((a, b) => a.mm - b.mm)[0]
+      };
+      if (byBand.left) {
+        playTone({ freq: freqFromDepth(byBand.left.mm), pan: -0.82, gain: gainFromDepth(byBand.left.mm), duration: 0.1, type: "square" });
+      }
+      if (byBand.center) {
+        playTone({ freq: freqFromDepth(byBand.center.mm) * 0.95, pan: 0.0, gain: gainFromDepth(byBand.center.mm) * 0.9, duration: 0.11, type: "triangle" });
+      }
+      if (byBand.right) {
+        playTone({ freq: freqFromDepth(byBand.right.mm), pan: 0.82, gain: gainFromDepth(byBand.right.mm), duration: 0.1, type: "square" });
+      }
+    }
+
+    function sonifyDepthTriad(samples) {
+      const nearest = [...samples].sort((a, b) => a.mm - b.mm).slice(0, 3);
+      const intervals = [1.0, 1.26, 1.5];
+      for (let i = 0; i < nearest.length; i++) {
+        const s = nearest[i];
+        playTone({
+          freq: freqFromDepth(s.mm) * intervals[i],
+          pan: s.pan,
+          gain: gainFromDepth(s.mm) * (0.9 - i * 0.15),
+          duration: 0.16,
+          type: "sine"
+        });
+      }
+    }
+
+    function runSonificationStep() {
+      if (!audioEnabled || !latestFrame) return;
+      const samples = extractValidSamples(latestFrame);
+      if (samples.length === 0) return;
+      const algo = sonifyAlgoEl.value;
+      if (algo === "nearest_ping") sonifyNearestPing(samples);
+      if (algo === "sweep_melody") sonifySweepMelody(samples);
+      if (algo === "stereo_bands") sonifyStereoBands(samples);
+      if (algo === "depth_triad") sonifyDepthTriad(samples);
+    }
+
+    function restartSonificationTimer() {
+      if (sonifyTimer) {
+        clearInterval(sonifyTimer);
+        sonifyTimer = null;
+      }
+      if (!audioEnabled) return;
+      const rate = Math.max(4, Math.min(20, Number(sonifyRateEl.value) || 10));
+      sonifyRateValueEl.textContent = String(rate);
+      sonifyTimer = setInterval(runSonificationStep, Math.round(1000 / rate));
     }
 
     async function syncResolutionConfig() {
@@ -237,6 +436,36 @@
       }
     });
 
+    sonifyAlgoEl.addEventListener("change", () => {
+      sonifyHelpEl.textContent = sonifyAlgorithmInfo[sonifyAlgoEl.value] || "";
+    });
+    sonifyRateEl.addEventListener("input", () => {
+      sonifyRateValueEl.textContent = sonifyRateEl.value;
+      restartSonificationTimer();
+    });
+    audioToggle.addEventListener("click", async () => {
+      try {
+        if (!audioEnabled) {
+          ensureAudio();
+          await audioCtx.resume();
+          audioEnabled = true;
+          audioToggle.textContent = "Disable Audio";
+          audioStateEl.textContent = "on";
+          audioStateEl.style.color = "#86efac";
+          restartSonificationTimer();
+        } else {
+          audioEnabled = false;
+          audioToggle.textContent = "Enable Audio";
+          audioStateEl.textContent = "off";
+          audioStateEl.style.color = "#cbd5e1";
+          restartSonificationTimer();
+        }
+      } catch (err) {
+        netEl.textContent = `Audio error: ${err.message}`;
+        netEl.style.color = "#fca5a5";
+      }
+    });
+
     async function tick() {
       try {
         const r = await fetch("/latest", { cache: "no-store" });
@@ -253,6 +482,7 @@
         if (typeof d.frequency_hz === "number") {
           tofFreqEl.textContent = String(d.frequency_hz);
         }
+        latestFrame = d;
 
         let valid = 0;
         let min = 1e9;
@@ -312,6 +542,8 @@
     }
 
     syncResolutionConfig();
+    sonifyHelpEl.textContent = sonifyAlgorithmInfo[sonifyAlgoEl.value];
+    sonifyRateValueEl.textContent = sonifyRateEl.value;
     setInterval(tick, 120);
     tick();
 
