@@ -48,6 +48,9 @@ const uint16_t WIFI_STREAM_PORT = 8765;
 WiFiServer dataServer(WIFI_STREAM_PORT);
 WiFiClient dataClient;
 WebServer webServer(WIFI_WEB_PORT);
+String lastFramePayload = "{\"status\":\"waiting_for_first_frame\"}";
+uint32_t lastFrameMillis = 0;
+uint32_t frameCounter = 0;
 
 String buildLandingPage() {
   String html;
@@ -65,10 +68,11 @@ String buildLandingPage() {
   html += F("<h1>VL53L5CX + BNO08X Viewer</h1>");
   html += F("<p><strong>Default mode:</strong> web server hosted on the ESP32.</p>");
   html += F("<p>Choose how you want to view data:</p>");
-  html += F("<a class='btn' href='/esp32'>Use ESP32 web interface (default)</a>");
+  html += F("<a class='btn' href='/app'>Use ESP32 web interface (default)</a>");
   html += F("<a class='btn secondary' href='/python'>Use Python <code>-m viewer</code></a>");
   html += F("<h2>Connection details</h2><ul>");
   html += F("<li>ESP32 web UI: <code>http://192.168.4.1/</code></li>");
+  html += F("<li>ESP32 Three.js view: <code>http://192.168.4.1/app</code></li>");
   html += F("<li>TCP sensor stream: <code>192.168.4.1:");
   html += String(WIFI_STREAM_PORT);
   html += F("</code></li>");
@@ -80,17 +84,57 @@ String buildLandingPage() {
 
 String buildEsp32ModePage() {
   String html;
-  html.reserve(1500);
+  html.reserve(9800);
   html += F("<!doctype html><html><head><meta charset='utf-8'>");
   html += F("<meta name='viewport' content='width=device-width,initial-scale=1'>");
-  html += F("<title>ESP32 Web Interface</title></head><body style='font-family:system-ui;background:#111827;color:#f9fafb;padding:24px'>");
-  html += F("<h1>ESP32 web interface active</h1>");
-  html += F("<p>This page is served directly by the ESP32 (default behavior).</p>");
-  html += F("<p>Sensor stream endpoint for integrations:</p>");
-  html += F("<p><code>192.168.4.1:");
+  html += F("<title>ESP32 ToF 3D Viewer</title>");
+  html += F("<style>");
+  html += F(":root{color-scheme:dark;}*{box-sizing:border-box;}body{margin:0;font-family:ui-sans-serif,system-ui,-apple-system,sans-serif;background:radial-gradient(circle at 20% 10%,#1f2937,#030712 65%);color:#f9fafb;}");
+  html += F("#hud{position:fixed;top:12px;left:12px;right:12px;display:flex;gap:10px;flex-wrap:wrap;z-index:2;}");
+  html += F(".card{background:rgba(17,24,39,.78);border:1px solid rgba(148,163,184,.35);border-radius:12px;padding:10px 12px;backdrop-filter:blur(6px);}");
+  html += F(".title{font-weight:700;font-size:14px;margin-bottom:2px;} .small{font-size:12px;color:#cbd5e1;}");
+  html += F("#view{position:fixed;inset:0;}a{color:#93c5fd;text-decoration:none;} .warn{color:#fca5a5;}");
+  html += F("</style>");
+  html += F("</head><body>");
+  html += F("<div id='hud'>");
+  html += F("<div class='card'><div class='title'>ESP32 ToF Viewer</div><div class='small'>AP: <code>VL53L5CX-Viewer</code></div></div>");
+  html += F("<div class='card'><div class='small'>Frame: <span id='frame'>-</span></div><div class='small'>Age: <span id='age'>-</span> ms</div></div>");
+  html += F("<div class='card'><div class='small'>Valid zones: <span id='valid'>-</span>/64</div><div class='small'>Min/Max: <span id='minmax'>-</span></div></div>");
+  html += F("<div class='card'><div class='small'>Sources: <a href='/latest'>/latest</a> | TCP <code>192.168.4.1:");
   html += String(WIFI_STREAM_PORT);
-  html += F("</code></p>");
-  html += F("<p><a href='/' style='color:#60a5fa'>← Back to mode selection</a></p></body></html>");
+  html += F("</code></div><div class='small'><a href='/'>Mode selection</a> | <a href='/python'>Python mode</a></div></div>");
+  html += F("<div class='card'><div class='small warn' id='net'>Waiting for sensor stream...</div></div>");
+  html += F("</div>");
+  html += F("<div id='view'></div>");
+  html += F("<script type='importmap'>{\"imports\":{\"three\":\"https://unpkg.com/three@0.160.0/build/three.module.js\"}}</script>");
+  html += F("<script type='module'>");
+  html += F("import * as THREE from 'https://unpkg.com/three@0.160.0/build/three.module.js';");
+  html += F("import { OrbitControls } from 'https://unpkg.com/three@0.160.0/examples/jsm/controls/OrbitControls.js';");
+  html += F("const netEl=document.getElementById('net');const frameEl=document.getElementById('frame');const ageEl=document.getElementById('age');const validEl=document.getElementById('valid');const minmaxEl=document.getElementById('minmax');");
+  html += F("const container=document.getElementById('view');const scene=new THREE.Scene();scene.fog=new THREE.Fog(0x030712,0.6,3.5);");
+  html += F("const camera=new THREE.PerspectiveCamera(60,window.innerWidth/window.innerHeight,0.01,20);camera.position.set(0.0,0.55,0.85);");
+  html += F("const renderer=new THREE.WebGLRenderer({antialias:true});renderer.setPixelRatio(Math.min(window.devicePixelRatio||1,2));renderer.setSize(window.innerWidth,window.innerHeight);renderer.setClearColor(0x030712,1);container.appendChild(renderer.domElement);");
+  html += F("const controls=new OrbitControls(camera,renderer.domElement);controls.enableDamping=true;controls.target.set(0,0.16,0);");
+  html += F("scene.add(new THREE.AmbientLight(0xffffff,0.6));const dl=new THREE.DirectionalLight(0xffffff,0.9);dl.position.set(1.1,1.5,0.7);scene.add(dl);");
+  html += F("const floor=new THREE.GridHelper(1.2,12,0x334155,0x1f2937);floor.position.y=-0.02;scene.add(floor);");
+  html += F("const cloud=new THREE.Group();scene.add(cloud);const rotRoot=new THREE.Group();rotRoot.add(cloud);scene.add(rotRoot);");
+  html += F("const rays=new THREE.Group();rotRoot.add(rays);");
+  html += F("const points=[];const geom=new THREE.SphereGeometry(0.011,12,10);for(let i=0;i<64;i++){const mat=new THREE.MeshStandardMaterial({color:0x60a5fa,roughness:0.3,metalness:0.05,emissive:0x0b1220});const m=new THREE.Mesh(geom,mat);cloud.add(m);points.push(m);} ");
+  html += F("const rayLines=[];for(let i=0;i<64;i++){const g=new THREE.BufferGeometry();const pos=new Float32Array([0,0,0,0,0,0]);g.setAttribute('position',new THREE.BufferAttribute(pos,3));const l=new THREE.Line(g,new THREE.LineBasicMaterial({color:0x334155,transparent:true,opacity:0.7}));rays.add(l);rayLines.push(l);} ");
+  html += F("function heatColor(mm){const t=Math.max(0,Math.min(1,(mm-120)/1900));const r=Math.round(255*Math.min(1,1.7*t));const g=Math.round(255*(1-Math.abs(t-0.45)*1.5));const b=Math.round(255*(1-t));return (r<<16)|(g<<8)|b;} ");
+  html += F("const fov=65*Math.PI/180;const scale=Math.tan(fov/2);");
+  html += F("function zoneDir(idx){const row=Math.floor(idx/8),col=idx%8;const nx=(col-3.5)/3.5,ny=(row-3.5)/3.5;const x=nx*scale,y=ny*scale,z=1;const l=Math.hypot(x,y,z)||1;return [x/l,-y/l,z/l];}");
+  html += F("const dirs=Array.from({length:64},(_,i)=>zoneDir(i));");
+  html += F("function quatToEuler(q){const [w,x,y,z]=q;const ys=2*(w*y-x*z);const pitch=Math.asin(Math.max(-1,Math.min(1,ys)));const roll=Math.atan2(2*(w*x+y*z),1-2*(x*x+y*y));const yaw=Math.atan2(2*(w*z+x*y),1-2*(y*y+z*z));return {roll,pitch,yaw};}");
+  html += F("async function tick(){try{const r=await fetch('/latest',{cache:'no-store'});if(!r.ok)throw new Error('http '+r.status);const d=await r.json();if(!d.distances||d.distances.length!==64)throw new Error('no frame');");
+  html += F("let valid=0,min=1e9,max=0;for(let i=0;i<64;i++){const mm=Number(d.distances[i]||0);const ok=(d.status&&d.status[i]===5&&mm>0);const p=points[i];const l=rayLines[i];if(!ok){p.visible=false;l.visible=false;continue;}valid++;min=Math.min(min,mm);max=Math.max(max,mm);const m=Math.min(mm,3500)/1000;const v=dirs[i];const x=v[0]*m,y=v[1]*m,z=v[2]*m;p.visible=true;p.position.set(x,y,z);p.material.color.setHex(heatColor(mm));const arr=l.geometry.attributes.position.array;arr[3]=x;arr[4]=y;arr[5]=z;l.geometry.attributes.position.needsUpdate=true;l.visible=true;l.material.color.setHex(heatColor(mm));}");
+  html += F("if(Array.isArray(d.quat)&&d.quat.length===4){const e=quatToEuler(d.quat);rotRoot.rotation.set(e.roll,e.pitch,e.yaw,'XYZ');}");
+  html += F("frameEl.textContent=d.frame??'-';ageEl.textContent=(d.age_ms??'-').toString();validEl.textContent=String(valid);minmaxEl.textContent=valid?`${Math.round(min)} / ${Math.round(max)} mm`:'-';netEl.textContent='Live stream active';netEl.style.color='#86efac';");
+  html += F("}catch(err){netEl.textContent='Stream error: '+err.message;netEl.style.color='#fca5a5';}}");
+  html += F("setInterval(tick,120);tick();");
+  html += F("window.addEventListener('resize',()=>{camera.aspect=window.innerWidth/window.innerHeight;camera.updateProjectionMatrix();renderer.setSize(window.innerWidth,window.innerHeight);});");
+  html += F("(function anim(){requestAnimationFrame(anim);controls.update();renderer.render(scene,camera);})();");
+  html += F("</script></body></html>");
   return html;
 }
 
@@ -112,15 +156,46 @@ void setupWebServer() {
   webServer.on("/", HTTP_GET, []() {
     webServer.send(200, "text/html", buildLandingPage());
   });
+  webServer.on("/app", HTTP_GET, []() {
+    webServer.send(200, "text/html", buildEsp32ModePage());
+  });
   webServer.on("/esp32", HTTP_GET, []() {
     webServer.send(200, "text/html", buildEsp32ModePage());
   });
   webServer.on("/python", HTTP_GET, []() {
     webServer.send(200, "text/html", buildPythonModePage());
   });
+  webServer.on("/latest", HTTP_GET, []() {
+    String payload;
+    payload.reserve(lastFramePayload.length() + 96);
+    payload += "{\"frame\":";
+    payload += String(frameCounter);
+    payload += ",\"age_ms\":";
+    payload += String(millis() - lastFrameMillis);
+    payload += ",\"data\":";
+    payload += lastFramePayload;
+    payload += "}";
+    // Keep legacy response shape by defaulting to frame JSON where possible.
+    if (lastFramePayload.startsWith("{\"distances\":")) {
+      // Merge metadata into the same object for frontend simplicity.
+      int insertPos = lastFramePayload.lastIndexOf('}');
+      if (insertPos > 0) {
+        String merged = lastFramePayload.substring(0, insertPos);
+        merged += ",\"frame\":";
+        merged += String(frameCounter);
+        merged += ",\"age_ms\":";
+        merged += String(millis() - lastFrameMillis);
+        merged += "}";
+        webServer.send(200, "application/json", merged);
+        return;
+      }
+    }
+    webServer.send(200, "application/json", payload);
+  });
   webServer.on("/status", HTTP_GET, []() {
     String payload = String("{\"ssid\":\"") + WIFI_AP_SSID + "\",\"stream_port\":" + WIFI_STREAM_PORT
-      + ",\"imu\":" + (imuAvailable ? "true" : "false") + "}";
+      + ",\"imu\":" + (imuAvailable ? "true" : "false")
+      + ",\"latest\":\"/latest\",\"app\":\"/app\"}";
     webServer.send(200, "application/json", payload);
   });
   webServer.begin();
@@ -269,6 +344,9 @@ void loop() {
       payload += "],\"v\":\"";
       payload += VERSION;
       payload += "\"}";
+      lastFramePayload = payload;
+      lastFrameMillis = millis();
+      frameCounter++;
       sendJsonLine(payload);
     }
   }

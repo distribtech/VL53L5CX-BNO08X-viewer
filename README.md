@@ -11,7 +11,7 @@ Real-time 3D point cloud viewer for the VL53L5CX multi-zone time-of-flight senso
 - **Temporal filtering** - Exponential moving average smooths noisy measurements
 - **Plane fitting** - Least squares and RANSAC methods for surface detection
 - **Mapping mode** - Accumulate points over time to build a 3D map of your environment
-- **ESP32-hosted web interface (default)** - ESP32 starts an access point, hosts a mode-selection web page, and streams sensor JSON over TCP
+- **ESP32-hosted Three.js interface (default)** - ESP32 starts an access point, serves a browser 3D UI, and streams sensor JSON over TCP
 - **Dev serial fallback** - Keep serial mode available via CLI options for development
 
 ## Hardware
@@ -65,6 +65,8 @@ Firmware defaults:
 - Starts Wi-Fi Access Point: `VL53L5CX-Viewer`
 - Password: `viewer123`
 - ESP32 web page (mode selector): `http://192.168.4.1/`
+- ESP32 Three.js viewer: `http://192.168.4.1/app`
+- ESP32 latest frame JSON: `http://192.168.4.1/latest`
 - TCP data stream: `192.168.4.1:8765`
 - Keeps serial JSON output enabled for development/debugging
 
@@ -90,8 +92,10 @@ arduino-cli upload --fqbn esp32:esp32:esp32 --port /dev/cu.usbserial-0001 firmwa
 1. Connect your computer to the ESP32 AP: `VL53L5CX-Viewer` (password: `viewer123`)
 2. Open `http://192.168.4.1/`
 3. Choose one of the two options in the ESP32 page:
-   - **Use ESP32 web interface (default)**
+   - **Use ESP32 web interface (default)** -> opens `http://192.168.4.1/app`
    - **Use Python `-m viewer`**
+
+Note: the ESP32 page loads Three.js from CDN (`unpkg.com`). If your client has no internet access while connected to the ESP32 AP, the 3D page will not render and Python mode remains the reliable fallback.
 
 ### 3) Optional: Start Python 3D viewer
 
@@ -105,7 +109,7 @@ python -m viewer
 
 2. Open the UI at `http://localhost:8080` on the same computer running `python -m viewer`
    - From another device (for example a phone), open `http://<computer-ip>:8080`.
-   - `http://192.168.4.1/` is still served by ESP32, while Python Viser runs on your computer.
+   - `http://192.168.4.1/` and `http://192.168.4.1/app` are still served by ESP32, while Python Viser runs on your computer.
 
 ## Usage
 
